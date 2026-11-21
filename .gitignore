@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# Gen2E baselines repo (private, for co-author code review)
+# ---------------------------------------------------------------------------
+
+# datasets / symlinks to datasets (PCCR lives in /data2/PCCR, see tools/download_pccr.sh)
+# anchored to the repo root on purpose: upstream code has its own tests/data/ fixtures
+/data/
+
+# training / evaluation outputs
+work_dirs/
+outputs/
+/logs/
+wandb/
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.log
+# ...but keep the small upstream unit-test fixtures so the vendored snapshots stay complete
+!**/tests/data/**/*.pkl
+
+# python & build artifacts (upstream PD-BEV ships a prebuilt build/ dir and .so files: excluded on purpose)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+*.so
+*.o
+
+# third-party code installed by tools/setup_env_*.sh (unmodified upstream, re-created on demand)
+third_party/mmdetection3d-v0.17.1/
+
+# heavy binaries from the vendored PCCR benchmark repo that are not needed for review
+third_party/pccr/models/**/old_wheels/
+third_party/pccr/pccr/configs/rigs/*.png
+third_party/pccr/rigs.png
+*.whl
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
