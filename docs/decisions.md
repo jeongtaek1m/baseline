@@ -1,0 +1,35 @@
+# 결정 사항 기록
+
+포팅과 실험 설정에 영향을 주는 결정을 날짜순으로 남겨요. "확인 필요" 항목은 아직 확정되지 않은 것들이에요.
+
+## 확정
+
+| 날짜 | 결정 | 근거·비고 |
+|---|---|---|
+| 2026-11-21 | 데이터셋은 **PCCR** (Plentiful CARLA Camera Rigs, ECCV 2026)를 쓴다. HF 리비전 `18edf4f`로 고정하고 `/data2/PCCR`에 둔다. | 표의 컬럼(R1, R1-c6, …, R9)이 PCCR의 14개 리그와 같아요. 루트 디스크(`/`) 여유가 부족해서 `/data2`에 둬요. |
+| 2026-11-21 | 사용자가 말한 "ugbev"는 **UDGA** (NeurIPS 2024, SAITPublic/UDGA)다. | 사용자 확인. |
+| 2026-11-21 | 이번 포팅 범위는 BEVDepth(+PD-BEV, +UDGA)와 BEVFormer-S(+PD-BEV)다. vanilla BEVDepth 행도 함께 채운다. | 표에서 BEVDepth 행 자체가 비어 있어요. UniDrive와 CoIn3D는 보류해요. |
+| 2026-11-21 | BEVFormer-S는 **bevformer_small 구조 + 단일 프레임**(temporal queue 없음)으로 한다. | 사용자 확인. 공식 small 설정은 temporal queue를 쓰기 때문에 끄는 수정이 필요해요. |
+| 2026-11-21 | **모델당 GPU 2장**을 쓴다. 4090 4장에서 두 모델을 동시에 학습한다. | 사용자 지시. PCCR 공식 BEVDet도 GPU 2장 × 4샘플이었어요. |
+| 2026-11-21 | 레포는 공저자 코드 검토용 **private 모노레포**로 한다. 원본 스냅샷을 먼저 커밋하고, 변경은 커밋을 나눠서 넣는다. | 사용자: "배포가 아니라 공저자와 코드가 틀린 데 없는지 비교하려고 올린다". |
+| 2026-11-21 | 문서는 한국어로 쓴다. | 사용자 응답이 없어서 기본값으로 정했어요. 영어로 바꾸기 쉬워요. |
+| 2026-11-22 | **BEVDepth base는 PD-BEV 레포를 그대로 쓴다** (BEVDet dev2.0 @2ae6a02에서 갈라진 트리). | 사용자가 재확인했어요. 깨끗한 원본 BEVDet(@2ae6a02 또는 dev3.0 @26144be)도 선택지로 제시했지만 PD-BEV 트리를 골랐어요. 주의사항은 바로 아래에 있어요. |
+
+### BEVDepth base = PD-BEV 트리: 반드시 지킬 것
+
+PD-BEV는 원본 BEVDet 파일 16개를 직접 고쳤어요. 그래서 그 트리에서 config만 바꿔 "vanilla BEVDepth"를 돌리면 표준 BEVDepth가 아니에요.
+
+- **`PointToMultiViewDepth`(loading.py):** depth 라벨을 초점거리 450 px 기준 virtual depth로 바꾸고, 범위 필터를 ±100으로 바꿨어요. `img_inputs`에 8번째 원소(`act_intrins`)도 요구해요.
+- **PD-BEV 자체 BEVDepth 경로:** `torch.max` 관련 버그로 LiDAR depth 지도학습이 사실상 꺼져 있어요(검증 에이전트 확인).
+- **`CenterHead`:** 818줄이 바뀌었어요(PD-BEV 손실 추가, yaw weight 등).
+
+그래서 **vanilla BEVDepth는 원본 2ae6a02 클래스를 별도 이름으로 등록해서 그 경로로만** 돌려요. PD-BEV 설정은 PD-BEV 클래스를 쓰고요. 이 복원 작업은 별도 커밋으로 만들어서 공저자가 검토할 수 있게 해요.
+
+## 확인 필요 (사용자 답변 대기)
+
+| 항목 | 제안(기본값) | 왜 중요한가 |
+|---|---|---|
+| 보고 지표와 학습 클래스 수 | 9개 클래스로 학습하고, **7-class mAP**(test split)로 보고 | 표의 † 행이 이 방식이에요([evaluation_protocol.md](evaluation_protocol.md)). Gen2E와 BEVFormer-S 행을 어떻게 계산했는지 확인해야 해요. |
+| 기존 BEVFormer-S(PCCR) 코드 | 있으면 그 위에 PD-BEV를 붙이고, 없으면 새로 만든 뒤 vanilla 수치(R1 21.1)가 재현되는지부터 확인 | 원본 BEVFormer는 `num_cams=6`이 하드코딩돼 있어서 카메라 8대인 R1부터 크래시가 나요. 리그마다 LiDAR 높이(1.5~4.8 m)와 박스 좌표계 변환도 처리해야 해요. 기존 행과 같은 방식으로 처리해야 비교가 공정해요. |
+| 학습 하이퍼파라미터 | BEVDepth 계열은 PCCR BEVDet 설정(2×4 배치, AdamW 2e-4, 24 epoch, 384×704)에 맞추고, 방법별 추가 손실 가중치만 원 논문 값을 써요 | 원 논문 설정은 대부분 GPU 8장 기준이에요. |
+| PD-BEV head 구성 | PD-BEV의 `bev_loss`는 head task 0이 클래스 1개일 때만 동작해요. PCCR 기준 head는 9-class 단일 task예요. | head를 car 단독 task가 앞에 오는 다중 task로 바꿀지, `bev_loss`를 고칠지 정해야 해요. |
