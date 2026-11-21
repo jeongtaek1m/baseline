@@ -193,7 +193,10 @@ def add_mim_extension():
 
 
 if __name__ == '__main__':
-    add_mim_extension()
+    # Gen2E: PD-BEV commits its own mmdet3d/.mim/{configs,tools} (incl. scripts released nowhere
+    # else). Upstream's add_mim_extension() would rmtree them and replace them with symlinks on
+    # `pip install -e .`, so it is skipped here to keep the vendored snapshot intact.
+    # add_mim_extension()
     setup(
         name='mmdet3d',
         version=get_version(),
