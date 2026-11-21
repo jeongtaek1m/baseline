@@ -22,7 +22,7 @@
   - `5efe61f`: `bevdepth/`에 `setup.py`, `setup.cfg`, `requirements.txt`, `MANIFEST.in`, `LICENSE`를 BEVDet @2ae6a02에서 그대로 복원했어요(blob 해시 일치).
   - `928c5b0`: editable 설치를 할 때 PD-BEV의 `.mim`이 지워지지 않게 했어요.
 - **환경:** `gen2e-bevdepth`에 PD-BEV 트리를 editable로 설치하고 `bev_pool_v2`를 빌드했어요. 4090에서 forward/backward를 확인했어요.
-- **데이터:** PCCR 리그 14개 중 12개를 받았어요(R8, R9 진행 중). 오류는 없어요.
+- **데이터:** PCCR 14개 리그를 모두 받았어요. sha256 검증을 통과했고, 압축을 풀면 193 GB예요. 오류는 없었어요. `/data2/PCCR`에 있고 `data/pccr` 링크로 접근해요.
 
 ## 다음 할 일
 

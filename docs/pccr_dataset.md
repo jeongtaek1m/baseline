@@ -8,7 +8,7 @@
 | 라이선스 | CC-BY-NC-4.0 (비상업) |
 | 벤치마크 코드 | [BaderTim/plentiful-carla-camera-rigs](https://github.com/BaderTim/plentiful-carla-camera-rigs) @ `6798206`, `third_party/pccr/`에 원본 그대로 둠 |
 | 서버 위치 | `/data2/PCCR/<RIG>/`, 레포에서는 `data/pccr`(심볼릭 링크)로 접근 |
-| 용량 | zip 160.8 GB. 압축을 풀면 리그당 7~18 GB, 전체 약 200 GB |
+| 용량 | zip 160.8 GB. 압축을 풀면 리그당 7.4~18 GB, 전체 193 GB (2026-11-22 확인) |
 
 ## 받기
 
