@@ -64,6 +64,28 @@
 - 인프라 문제(README 등): B00~B03, B18, B19, B24, B26.
 - 이미 고친 것: B04 `/mnt/cfs` 덤프, B05 anomaly detection(커밋 `0be7094`), B06 `evaluate`의 `save_path`(커밋 `ed177d0`).
 
+## PD-BEV 재현 체크 (`tools/bugrepro/pdbev_checks.py`)
+
+CPU에서 합성 입력이나 실제 PCCR R1 mini 샘플로 돌려요. 각 체크는 버그가 깨뜨리는 동작을 직접 측정해요. 그래서 공식 코드에서는 FAIL, 고친 뒤에는 PASS가 나와요. PDBEV-11, PDBEV-15는 GPU 스모크 테스트에서 확인해요.
+
+```bash
+cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdbev_checks.py
+```
+
+| ID | 체크 내용 | 고치기 전 (2026-11-22, PCCR 카메라 적응 `0318e03`만 적용) | 고친 뒤 | 커밋 |
+|---|---|---|---|---|
+| PDBEV-1 | 가로·세로가 다른 BEV에 셀마다 고유값을 넣고 IFV 렌더링으로 읽어요. | FAIL: `IndexError: index 3 is out of bounds for dimension 1 with size 3` (x와 y가 뒤바뀌어 y 크기를 넘음) | | |
+| PDBEV-3 | 위치 섭동을 (1.0, 0.5, 0.3) m로 고정하고, 렌더링 카메라 위치와 타깃 카메라 위치를 비교해요. | FAIL: 카메라 8대에서 최대 3.527 m 차이 | | |
+| PDBEV-4 | label −1 물체가 12개인 샘플에서 마지막 클래스(child) 채널의 peak 수를 세요. | FAIL: peak 17개, 기대 0개 | | |
+| PDBEV-5 | 같은 샘플의 2D heatmap peak 수를 기준 계산과 비교해요. 기준은 7클래스, BEV 범위 안, z > 1 m, 증강 후 맵 안이에요. | FAIL: peak 29개, 기대 8개 | | |
+| PDBEV-6/7 | 크롭으로 위쪽 물체가 맵 밖으로 나가게 한 뒤, mask 셀을 기준 3×3 창과 비교해요. | FAIL: 물체 창 밖 mask 셀 125개 | | |
+| PDBEV-8 | z 8 m, height_num 3으로 view transformer를 만들고 z-bin이 덮는 범위를 재요. | FAIL: 3칸 × 2 m = 6 m (8 m 중) | | |
+| PDBEV-9 | flip한 샘플에서 실제 intrinsic으로 투영한 픽셀과 증강 행렬로 옮긴 픽셀을 비교해요. | FAIL: 110.5 px 차이 | | |
+| PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | | |
+| PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | | |
+| PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | | |
+| PDBEV-17 | 무작위 가중치·입력에서 세 보조 head의 sigmoid(출력) 최솟값을 재요. | FAIL: Img_Aux 0.500, Img_Aux_Dy 0.500, BEV_Aux height 0.500 (ReLU 바닥) | | |
+
 ## UDGA: 재구현할 때 의도대로 만들 부분
 
 UDGA는 코드 기반이 달라서 재구현해요([porting_plan.md](porting_plan.md) 3장). 위치는 `third_party/UDGA/` 기준이에요.
