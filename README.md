@@ -34,6 +34,7 @@ Gen2E/
 │   ├── pccr_sha256.txt
 │   ├── pccr_rig_summary.py  리그 정의 요약표
 │   ├── pccr_metric.py       표 지표(7-class mAP) 재현과 집계
+│   ├── pccr_box_z_check.py  GT 박스 z 확인 (좌표계, 지면 접촉, 이미지 투영)
 │   ├── setup_env_bevdepth.sh
 │   └── setup_env_bevformer.sh
 └── data/pccr -> /data2/PCCR (심볼릭 링크, git 제외)
@@ -65,7 +66,7 @@ python3 tools/pccr_metric.py verify-dagger
 
 ## 평가 프로토콜 요약
 
-- **학습:** R1 train split. 모델당 GPU 2장.
+- **학습:** R1 train split, 7개 클래스(traffic 2종 제외). 모델당 GPU 2장.
 - **평가:** 14개 리그 각각의 **test** split.
 - **지표:** **7-class mAP.** traffic_sign과 traffic_light를 뺀 7개 클래스의 nuScenes 방식 AP 평균(거리 임계값 0.5/1/2/4 m)이에요. 표의 † 행 4개가 이 값과 소수점까지 일치해요.
 - 자세한 내용은 [docs/evaluation_protocol.md](docs/evaluation_protocol.md)에 있어요.

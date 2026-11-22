@@ -23,10 +23,16 @@
   - `928c5b0`: editable 설치를 할 때 PD-BEV의 `.mim`이 지워지지 않게 했어요.
 - **환경:** `gen2e-bevdepth`에 PD-BEV 트리를 editable로 설치하고 `bev_pool_v2`를 빌드했어요. 4090에서 forward/backward를 확인했어요.
 - **데이터:** PCCR 14개 리그를 모두 받았어요. sha256 검증을 통과했고, 압축을 풀면 193 GB예요. 오류는 없었어요. `/data2/PCCR`에 있고 `data/pccr` 링크로 접근해요.
+- **결정:** 학습도 7개 클래스로 하고(traffic 2종 제외), BEVDepth 계열 학습 설정은 PCCR BEVDet 기준으로 정했어요([decisions.md](decisions.md)).
+- **박스 z 확인 (사용자 요청):** `tools/pccr_box_z_check.py`로 14개 리그를 확인했어요. 자세한 결과는 [pccr_dataset.md](pccr_dataset.md) "박스 z 확인"에 있어요.
+  - 박스 z는 중심이고 정확해요. 차량은 지면에 닿아 있고, 보행자는 지면에서 3 cm 위예요(LiDAR 대조).
+  - ego 원점은 4개 차종 모두 지면이에요. 그래서 ego 좌표계를 쓰는 BEVDepth 계열은 고칠 게 없어요.
+  - LiDAR 좌표계는 리그마다 지면 높이가 1.50~4.80 m로 달라요. BEVFormer-S에서 어느 좌표계를 쓸지 새 결정 항목으로 올렸어요.
+  - PCCR의 PETR·BEVFusion 로더는 z를 바닥으로 읽어서 학습 박스가 h/2 떠 있어요. † 지표에는 영향이 없어요.
 
 ## 다음 할 일
 
-1. 사용자 확인이 필요한 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요").
+1. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). vanilla BEVDepth는 막힌 결정이 없어요.
 2. `bevdepth/`에 PCCR 데이터셋 어댑터와 `cams=None` 처리를 넣어요(포팅 계획 0-A).
 3. vanilla BEVDepth용 원본 클래스를 복원하고 설정을 만들어요(0-B, 1장). 그다음 R1 학습(GPU 2장)과 14개 리그 평가를 해요.
 4. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S 재현을 확인해요(4장).

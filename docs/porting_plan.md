@@ -49,8 +49,9 @@ PD-BEV는 BEVDet 원본 16개 파일을 직접 고쳤어요(부록 A). vanilla B
 | 카메라 수 | `num_cams=6`이 하드코딩돼 있어요(`transformer.py:171`, `spatial_cross_attention.py:152/157`). **카메라 8대인 R1 학습부터 크래시가 나요.** 평가 리그는 카메라가 4~10대예요. SCA가 `key.shape[0]`에서 카메라 수를 읽게 고쳐요. SCA 가중치는 카메라별이 아니라서 안전해요. |
 | `cams_embeds` | 학습 가능한 `[num_cams, C]` 임베딩이라 카메라 수가 바뀌면 깨져요. `use_cams_embeds=False`로 하려면 DDP에서 `find_unused_parameters=True`가 필요하거나, 쓸 때만 파라미터를 만들어야 해요(`transformerV2.py:78-79` 방식). **기존 BEVFormer-S 행과 같은 방식이어야 해요(확인 필요).** |
 | 단일 프레임 | `queue_length=1`이면 크래시가 나요. `prev_bev`를 `len_queue > 1`일 때만 계산하도록 고쳐요(`bevformer.py:217-222`). `video_test_mode=False`로 둬요. |
-| 클래스 | PCCR 9개 클래스예요. head와 `bbox_coder`의 `num_classes`를 같이 바꿔야 해요(NMSFreeCoder는 `idx % num_classes`로 디코딩해요). |
-| 좌표 기준과 차량 높이 | PCCR LIDAR_TOP은 ego와 회전이 같고 높이만 차량마다 달라요. R1~R3·R7은 1.86 m, R4·R5·R8은 1.50 m, R6은 4.80 m, R9는 4.18 m(x=+2.6)예요. BEVFormer는 LiDAR 좌표계를 쓰기 때문에, 리그가 바뀌면 z 기준이 최대 3 m 어긋나요. ego 기준으로 학습·평가할지 정해야 해요. **기존 BEVFormer-S 행 방식과 맞춰야 해요(확인 필요).** |
+| 클래스 | 학습 클래스는 7개예요(traffic 2종 제외, 2026-11-22 결정). head와 `bbox_coder`의 `num_classes`를 같이 바꿔야 해요(NMSFreeCoder는 `idx % num_classes`로 디코딩해요). |
+| 박스 z | `gt_boxes`의 z는 박스 중심이에요. mmdet3d 0.17.1 기본 `get_ann_info`(`origin=(0.5, 0.5, 0.5)`)를 그대로 써요. PCCR의 PETR·BEVFusion 로더는 `origin=(0.5, 0.5, 0)`이라 박스가 h/2 떠요. **그 로더를 템플릿으로 쓰면 안 돼요**([pccr_dataset.md](pccr_dataset.md) "박스 z 확인"). |
+| 좌표 기준과 차량 높이 | PCCR LIDAR_TOP은 ego와 회전이 같고 높이만 차량마다 달라요. R1~R3·R7은 1.86 m, R4·R5·R8은 1.50 m, R6은 4.80 m, R9는 4.18 m(x=+2.6)예요. BEVFormer는 LiDAR 좌표계를 쓰기 때문에, 리그가 바뀌면 지면 높이가 최대 3.3 m 어긋나요. bevformer_small의 pillar 샘플 높이도 지면 기준으로 리그마다 달라져요(2026-11-22 확인). LiDAR 좌표계를 그대로 쓸지, 지면 기준 고정 좌표계로 바꿀지 정해야 해요. **기존 BEVFormer-S 행 방식과 맞춰야 해요(확인 필요).** |
 | 해상도 | 모든 PCCR 카메라는 1280×720이에요. 공식 small은 0.8 스케일(1024×576)을 써요. |
 | 배치 | MSDA의 `im2col_step=64` 때문에 `bs × num_cams ≤ 64`(또는 64의 배수)여야 해요. GPU당 1샘플로 카메라 10대까지는 괜찮아요. 전체 배치 8이 필요하면 `GradientCumulativeOptimizerHook`을 써요. |
 | 기타 버그 | TSA `value[:bs]`, SCA batch-0 mask 버그는 `samples_per_gpu > 1`일 때만 문제가 돼요. |
@@ -60,7 +61,7 @@ PD-BEV는 BEVDet 원본 16개 파일을 직접 고쳤어요(부록 A). vanilla B
 ## 1. BEVDepth (vanilla) — 규모 M
 
 1. 0-A, 0-B를 끝내요.
-2. `bevdepth/configs/gen2e/bevdepth-r50-pccr.py`를 만들어요. PCCR BEVDet 설정(입력 384×704, grid 0.8 m, AdamW 2e-4, 24 epoch, 2×4 배치, EMA)에 BEVDepth 요소를 더해요: 원본 `LSSViewTransformerBEVDepth`, DepthNet, LiDAR 기반 원본 `PointToMultiViewDepth`, depth loss weight.
+2. `bevdepth/configs/gen2e/bevdepth-r50-pccr.py`를 만들어요. PCCR BEVDet 설정(입력 384×704, grid 0.8 m, AdamW 2e-4, 24 epoch, 2×4 배치, EMA)에 BEVDepth 요소를 더해요: 원본 `LSSViewTransformerBEVDepth`, DepthNet, LiDAR 기반 원본 `PointToMultiViewDepth`, depth loss weight. head는 7-class 단일 task예요.
 3. R1에서 학습하고 14개 리그 test로 평가한 뒤 7-class mAP를 집계해요.
 4. **확인용 기준:** 같은 설정에서 depth를 끄면 PCCR의 BEVDet† 행(R1 25.2)과 비슷해야 해요. 파이프라인 검증용으로 선택 사항이에요.
 
@@ -150,10 +151,10 @@ PD-BEV 공식 코드는 BEVDepth 전용이라(README.md:50) 재구현이 필요�
 
 | # | 항목 | 선택지 |
 |---|---|---|
-| 1 | 보고 지표 | 9-class 학습 + 7-class mAP(† 방식, 추천) / 7-class 학습 |
+| 1 | 보고 지표 | **결정(2026-11-22):** 7-class로 학습하고 7-class mAP로 보고 |
 | 2 | 기존 BEVFormer-S PCCR 코드 | 있으면 재사용 / 없으면 새로 만들고 재현부터 확인 |
-| 3 | BEVFormer `cams_embeds`, 좌표 기준(LiDAR vs ego) | 기존 BEVFormer-S 행 방식과 동일하게 |
-| 4 | 학습 하이퍼파라미터 | PCCR BEVDet 기준(추천) / 원 논문 + lr 스케일 |
+| 3 | BEVFormer `cams_embeds`, 좌표 기준(LiDAR vs 지면 기준 고정 좌표계) | 기존 BEVFormer-S 행 방식과 동일하게 |
+| 4 | 학습 하이퍼파라미터 | **결정(2026-11-22):** BEVDepth 계열은 PCCR BEVDet 기준. BEVFormer-S는 2번과 함께 정해요 |
 | 5 | PD-BEV head 구성 (`bev_loss` 제약) | car 단독 task를 앞에 두는 다중 task / `bev_loss` 일반화 |
 | 6 | PD-BEV·UDGA 공식 코드 버그 | 공식 코드 재현(버그 유지) / 논문 의도대로 수정 (어느 쪽이든 문서화) |
 | 7 | PD-BEV 섭동 범위, UDGA λ·epoch | 원 논문 값 / PCCR에 맞춰 조정 |

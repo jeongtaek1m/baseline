@@ -39,7 +39,7 @@ python3 tools/pccr_metric.py verify-dagger
 | 체크포인트 | 학습 마지막 체크포인트 (`latest.pth`) | PCCR `sequential_test.sh` |
 | GPU | 모델당 2장 (4090 24GB) | 사용자 지시, PCCR BEVDet도 2장 |
 | 입력 해상도 | 원본 1280×720을 384×704로 (BEVDepth 계열) | PCCR `bevdet-r50-pccr.py` |
-| 학습 클래스 | 9개 (PCCR 기본) → 보고는 7-class | 확인 필요 ([decisions.md](decisions.md)) |
+| 학습 클래스 | **7개** (car, truck, bus, bicycle, motorcycle, adult, child). traffic_sign과 traffic_light는 학습에서 빼요. | 사용자 결정 2026-11-22 ([decisions.md](decisions.md)). PCCR † 행은 9개로 학습했어요. |
 
 ### PCCR 공식 BEVDet 설정 (BEVDepth 계열의 기준점)
 
@@ -49,6 +49,7 @@ python3 tools/pccr_metric.py verify-dagger
 - **학습:** AdamW lr 2e-4, weight decay 1e-7, grad clip 5, step 24, 24 epoch, `MEGVIIEMAHook`.
 - **배치:** `samples_per_gpu=4` × GPU 2장 = 8. 스크립트 주석에 "GPU 수를 바꾸면 lr을 조정하라"고 적혀 있어요.
 - **데이터 증강:** image resize (-0.06, 0.11), rot ±5.4°, flip / BEV rot ±22.5°, scale 0.95~1.05, flip.
+- **우리와 다른 점:** 우리는 학습 클래스를 7개로 줄여서 CenterHead도 7-class 단일 task예요. 학습 설정의 나머지는 위와 같아요.
 
 ### 우리 결과 집계
 
