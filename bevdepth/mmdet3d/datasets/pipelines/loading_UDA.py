@@ -557,7 +557,11 @@ class PrepareImageInputs_UDA(object):
             rot = sensor2keyego[:3, :3]
             tran = sensor2keyego[:3, 3]
             rot_aug = sensor2keyego_aug[:3, :3]
-            tran_aug = sensor2sensor_aug[:3, 3]
+            # Gen2E (PDBEV-3): the virtual camera's own position in the key ego frame, paired with
+            # rot_aug like (rot, tran) of the real cameras, and equal to the camera pose used for
+            # the virtual-view targets (bev_aug sensor2ego_translation = t + delta). Upstream took
+            # the translation of the relative real->virtual transform.
+            tran_aug = sensor2keyego_aug[:3, 3]
             # image view augmentation (resize, crop, horizontal flip, rotate)
             img_augs = self.sample_augmentation(
                 H=img.height, W=img.width, flip=flip, scale=scale)

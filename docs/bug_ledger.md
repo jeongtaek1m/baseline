@@ -28,7 +28,7 @@
 |---|---|---|---|---|---|---|---|
 | PDBEV-1 | `models/necks/view_transformer_pc.py:387` | IFV에서 렌더링할 때 `bev[b, :, Z, X, Y]`로 읽어요. BEV 텐서는 `[B, C, Z, Y, X]`라서 x와 y가 뒤바뀌어요. | B08 → C05 confirmed | 코드에서 확인 | 렌더링된 PV feature가 x=y에 대칭인 셀을 읽어요. | `view_transformer_pc.py:387`에서 `bev[b, :, Z, X, Y]`를 `bev[b, :, Z, Y, X]`로 바꾸고, `:373`의 차원 이름도 `(B, C, Z, Y, X)`로 고쳤어요. |  |
 | PDBEV-2 | `models/dense_heads/centerpoint_head.py:659` | `bev_loss`가 `pos_weights = gts.eq(0)`이에요. 배경 픽셀을 positive로 써요. head task 0이 1개 클래스일 때만 동작해요(`:656` `squeeze(1)`). | B09 → C06 confirmed, M01 | 코드에서 확인 | car BEV 보조 손실이 배경을 물체처럼 학습시켜요. 7클래스 단일 task head에서는 크래시가 나요. | **손실 자체를 빼요**(2026-11-22 결정, 논문에 없음). PDBEV-2 버그는 더 이상 해당하지 않아요. | |
-| PDBEV-3 | `datasets/pipelines/loading_UDA.py:549-550` vs `:538-543` (사용: `models/detectors/pcbev.py:76-79`) | 가상 카메라 렌더링에는 `rot_aug`(key-ego 기준 절대 회전)와 `tran_aug = sensor2sensor_aug[:3, 3]`(상대 이동)을 짝지어 써요. 가상 뷰 타깃에는 절대 이동(t+δ)을 써요. | B11 → C08 partly_wrong (불일치는 맞고, 크기 설명만 일부 고침) | 코드에서 확인 | 렌더링한 카메라와 타깃 카메라의 위치가 달라요(수 m). | | |
+| PDBEV-3 | `datasets/pipelines/loading_UDA.py:549-550` vs `:538-543` (사용: `models/detectors/pcbev.py:76-79`) | 가상 카메라 렌더링에는 `rot_aug`(key-ego 기준 절대 회전)와 `tran_aug = sensor2sensor_aug[:3, 3]`(상대 이동)을 짝지어 써요. 가상 뷰 타깃에는 절대 이동(t+δ)을 써요. | B11 → C08 partly_wrong (불일치는 맞고, 크기 설명만 일부 고침) | 코드에서 확인 | 렌더링한 카메라와 타깃 카메라의 위치가 달라요(수 m). | `loading_UDA.py:550`의 `tran_aug = sensor2sensor_aug[:3, 3]`(상대 이동)를 `sensor2keyego_aug[:3, 3]`(가상 카메라의 key-ego 기준 위치)로 바꿨어요. rot_aug와 짝이 맞고, 가상 뷰 타깃의 카메라 위치(t+δ)와 같아요. |  |
 | PDBEV-4 | `datasets/pipelines/loading_UDA.py:929, 1063` | `gt_labels[i] < classes_num` 검사를 −1(학습하지 않는 클래스)도 통과해요. 그래서 음수 인덱스로 마지막 클래스 채널에 그려져요. | M03 (검증에서 추가) | 코드에서 확인 | PCCR 7클래스 설정에서는 traffic_sign/light가 child 채널에 그려져요. nuScenes에는 −1 라벨이 없어서 생기지 않던 문제예요. | | |
 | PDBEV-5 | `datasets/pipelines/loading_UDA.py:860, 998` | 2D 타깃을 범위·이름 필터를 거치기 전의 `results['ann_infos']`로 만들어요. | M04 | 코드에서 확인 | BEV 범위(±51.2 m) 밖이나 학습하지 않는 클래스의 물체도 2D·렌더 타깃이 돼요. | | |
 | PDBEV-6 | `datasets/pipelines/loading_UDA.py:938-952, 1072-1086` | 타깃을 `y_int-1:y_int+2` 슬라이스로 써요. crop 뒤 중심이 맵 위쪽 밖(`y_int ≤ −3`)이면 시작과 끝이 둘 다 음수라 **맵 아래쪽 행에** 써져요. | M02 | 코드에서 확인 | 엉뚱한 위치에 회귀·depth 타깃이 써져요. | | |
@@ -75,7 +75,7 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | ID | 체크 내용 | 고치기 전 (2026-11-22, PCCR 카메라 적응 `0318e03`만 적용) | 고친 뒤 | 커밋 |
 |---|---|---|---|---|
 | PDBEV-1 | 가로·세로가 다른 BEV에 셀마다 고유값을 넣고 IFV 렌더링으로 읽어요. | FAIL: `IndexError: index 3 is out of bounds for dimension 1 with size 3` (x와 y가 뒤바뀌어 y 크기를 넘음) | PASS: 30개 voxel 모두 올바른 셀 |  |
-| PDBEV-3 | 위치 섭동을 (1.0, 0.5, 0.3) m로 고정하고, 렌더링 카메라 위치와 타깃 카메라 위치를 비교해요. | FAIL: 카메라 8대에서 최대 3.527 m 차이 | | |
+| PDBEV-3 | 위치 섭동을 (1.0, 0.5, 0.3) m로 고정하고, 렌더링 카메라 위치와 타깃 카메라 위치를 비교해요. | FAIL: 카메라 8대에서 최대 3.527 m 차이 | PASS: 카메라 8대에서 최대 0.000 m |  |
 | PDBEV-4 | label −1 물체가 12개인 샘플에서 마지막 클래스(child) 채널의 peak 수를 세요. | FAIL: peak 17개, 기대 0개 | | |
 | PDBEV-5 | 같은 샘플의 2D heatmap peak 수를 기준 계산과 비교해요. 기준은 7클래스, BEV 범위 안, z > 1 m, 증강 후 맵 안이에요. | FAIL: peak 29개, 기대 8개 | | |
 | PDBEV-6/7 | 크롭으로 위쪽 물체가 맵 밖으로 나가게 한 뒤, mask 셀을 기준 3×3 창과 비교해요. | FAIL: 물체 창 밖 mask 셀 125개 | | |
