@@ -947,7 +947,9 @@ class Load3DBoxesHeatmap(object):
             # print(valid)
             for center_index in range(len(gt_labels)):
                 label_num=label_num+1
-                if (valid[center_index] == True) and (gt_labels[center_index] < self.classes_num):
+                # Gen2E (PDBEV-4): label -1 marks a class outside the list; it passed '< classes_num'
+                # and was drawn into the last class channel through negative indexing.
+                if (valid[center_index] == True) and (0 <= gt_labels[center_index] < self.classes_num):
                     radius = gaussian_radius(
                         (torch.tensor(box_width[center_index]), torch.tensor(box_height[center_index])),
                         min_overlap=0.1)
@@ -1081,7 +1083,9 @@ class Load3DBoxesHeatmap(object):
                                                    self.classes_num)
             center_int = gravity_center_img.to(torch.int32)
             for center_index in range(len(gt_labels)):
-                if (valid[center_index] == True) and (gt_labels[center_index] < self.classes_num):
+                # Gen2E (PDBEV-4): label -1 marks a class outside the list; it passed '< classes_num'
+                # and was drawn into the last class channel through negative indexing.
+                if (valid[center_index] == True) and (0 <= gt_labels[center_index] < self.classes_num):
                     radius = gaussian_radius(
                         (torch.tensor(box_width[center_index]), torch.tensor(box_height[center_index])),
                         min_overlap=0.1)
