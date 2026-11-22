@@ -34,7 +34,7 @@
 | PDBEV-6 | `datasets/pipelines/loading_UDA.py:938-952, 1072-1086` | 타깃을 `y_int-1:y_int+2` 슬라이스로 써요. crop 뒤 중심이 맵 위쪽 밖(`y_int ≤ −3`)이면 시작과 끝이 둘 다 음수라 **맵 아래쪽 행에** 써져요. | M02 | 코드에서 확인 | 엉뚱한 위치에 회귀·depth 타깃이 써져요. | | |
 | PDBEV-7 | `datasets/pipelines/loading_UDA.py:868-876, 898` | 유효성 검사를 카메라 0의 이미지 크기와 **증강 전** 좌표로 해요. | B20 → C14 confirmed | 코드에서 확인 | PCCR은 카메라 크기가 모두 같아서 크기 부분은 무해해요. 증강 전 좌표로 검사하는 게 PDBEV-6의 원인이에요. | | |
 | PDBEV-8 | `models/necks/view_transformer_pc.py:253` | IFV z-bin 크기를 `int(z범위 / height_num)`로 계산해요. | M05 | 코드에서 확인 | 공식 설정(8 m / 4칸)과 PCCR 설정(12 m / 4칸)은 나누어떨어져서 **발동하지 않아요.** 나누어떨어지지 않으면 z 범위 일부가 빠지거나, 0으로 나누게 돼요. | `view_transformer_pc.py:253`의 `int(z / height_num)`를 `float(z) / height_num`으로 바꿨어요. |  |
-| PDBEV-9 | `datasets/pipelines/loading_UDA.py:591-595` | 실제 intrinsic(`intrins_actual`)에 resize와 crop만 반영하고 flip은 반영하지 않아요. | M13 | 코드에서 확인 | 뒤집힌 샘플은 DepthNet 카메라 입력의 cx'가 틀려요. | | |
+| PDBEV-9 | `datasets/pipelines/loading_UDA.py:591-595` | 실제 intrinsic(`intrins_actual`)에 resize와 crop만 반영하고 flip은 반영하지 않아요. | M13 | 코드에서 확인 | 뒤집힌 샘플은 DepthNet 카메라 입력의 cx'가 틀려요. | flip이면 실제 intrinsic의 주점을 `cx' = W_crop − cx'`로 옮겨요(`loading_UDA.py:595` 다음). 좌우 반전 자체는 공식대로 post_rot이 담당해요. 회전(±5.4°)도 공식대로 넣지 않아요. |  |
 | PDBEV-10 | `datasets/pipelines/loading_UDA.py:351-381` | 섭동용 Euler 각 이름이 카메라 축과 맞지 않아요. `pitch_aug`는 영상을 화면 안에서 돌리고(roll), `roll_aug`는 카메라를 위아래로 기울여요(pitch). | M09 | 코드에서 확인 | PD-BEV-A는 두 범위가 같아서(±0.04 rad) 영향이 없어요. PD-BEV-B에서 pitch 범위를 따로 줄 때는 중요해요. | `euler_to_quaternion`에서 `pitch_aug`를 Euler roll(카메라 x축 회전 = 기울기)에, `roll_aug`를 Euler pitch(광축 회전)에 더하게 바꿨어요. yaw는 그대로예요. |  |
 | PDBEV-11 | `models/detectors/pcbev.py:90-92` → `view_transformer_pc.py:312, 345, 353` | 같은 BEV에 `BEV_Aux`를 iteration마다 3번 돌려요. | M07 | 코드에서 확인 | BatchNorm running stat이 한 step에 3번 갱신돼요. 계산도 3배예요. | | |
 | PDBEV-12 | `models/necks/img_aux.py:869-871` | IFV(높이 × feature)에 sigmoid가 없어요. 논문 식 3에는 있어요. | B22 → C22 confirmed | 코드에서 확인 | 논문과 계산이 달라요. | `BEV_Aux.forward`에서 `bev_height`에 `.sigmoid()`를 붙였어요(논문 식 3). PDBEV-17의 선형 출력층이 있어야 0~1 전 범위를 써요. |  |
@@ -80,7 +80,7 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-5 | 같은 샘플의 2D heatmap peak 수를 기준 계산과 비교해요. 기준은 7클래스, BEV 범위 안, z > 1 m, 증강 후 맵 안이에요. | FAIL: peak 29개, 기대 8개 | | |
 | PDBEV-6/7 | 크롭으로 위쪽 물체가 맵 밖으로 나가게 한 뒤, mask 셀을 기준 3×3 창과 비교해요. | FAIL: 물체 창 밖 mask 셀 125개 | | |
 | PDBEV-8 | z 8 m, height_num 3으로 view transformer를 만들고 z-bin이 덮는 범위를 재요. | FAIL: 3칸 × 2 m = 6 m (8 m 중) | PASS: 3칸 × 2.667 m = 8.0 m |  |
-| PDBEV-9 | flip한 샘플에서 실제 intrinsic으로 투영한 픽셀과 증강 행렬로 옮긴 픽셀을 비교해요. | FAIL: 110.5 px 차이 | | |
+| PDBEV-9 | crop_w > 0인 상태로 flip한 샘플에서, 실제 intrinsic의 주점을 증강 행렬로 옮긴 원래 주점과 비교해요. 좌우 반전 자체는 post_rot이 담당해서 pinhole K로는 표현할 수 없어요. 그래서 주점 위치와 \ | fx'\ | , \ | fy'\ | 만 비교해요. | flip이면 실제 intrinsic의 주점을 `cx' = W_crop − cx'`로 옮겨요(`loading_UDA.py:595` 다음). 좌우 반전 자체는 공식대로 post_rot이 담당해요. 회전(±5.4°)도 공식대로 넣지 않아요. |  |
 | PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | PASS: pitch_aug는 카메라 x축, roll_aug는 카메라 z축으로 돌려요. |  |
 | PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | PASS: 최대 차이 0 (부동소수점 수준) |  |
 | PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | | |

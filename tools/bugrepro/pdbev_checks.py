@@ -222,18 +222,24 @@ def check_pdbev8():
 
 
 def check_pdbev9():
-    """Actual intrinsics must map camera points to the flipped image pixels."""
-    r = run_pipeline(0, data_config(), aug=(0.55, (704, 396), (0, 12, 704, 396), True, 0.0), heatmaps=False)
+    """The actual intrinsics must give the principal point of the augmented (flipped) image.
+
+    A horizontal flip mirrors the image; the mirror itself is carried by post_rot (no pinhole K
+    with fx > 0 can express it), but the principal point of the flipped image is at
+    post_rot @ (cx, cy) + post_tran, and |fx'|, |fy'| are the resized focal lengths.
+    """
+    aug = (0.6, (768, 432), (40, 48, 744, 432), True, 0.0)      # crop_w > 0, so a flip moves cx'
+    r = run_pipeline(0, data_config(), aug=aug, heatmaps=False)
     imgs, rots, trans, intrins, post_rots, post_trans, bda, act = r['img_inputs']
-    err = 0.0
+    err_c = err_f = 0.0
     for i in range(len(r['cam_names'])):
-        X = np.array([1.0, 0.5, 10.0])
-        p = np.asarray(intrins[i], dtype=np.float64) @ X
-        p = p[:2] / p[2]
-        p_aug = np.asarray(post_rots[i])[:2, :2] @ p + np.asarray(post_trans[i])[:2]
-        q = np.asarray(act[i], dtype=np.float64)[:3, :3] @ X
-        err = max(err, float(np.abs(q[:2] / q[2] - p_aug).max()))
-    return report('pdbev9', err < 1e-3, f'flipped sample: actual-intrinsics pixel off by {err:.1f} px')
+        K = np.asarray(intrins[i], dtype=np.float64)
+        A = np.asarray(act[i], dtype=np.float64)
+        pp = np.asarray(post_rots[i])[:2, :2] @ K[:2, 2] + np.asarray(post_trans[i])[:2]
+        err_c = max(err_c, float(np.abs(A[:2, 2] - pp).max()))
+        err_f = max(err_f, float(abs(abs(A[0, 0]) - 0.6 * K[0, 0])), float(abs(abs(A[1, 1]) - 0.6 * K[1, 1])))
+    return report('pdbev9', err_c < 1e-3 and err_f < 1e-3,
+                  f'flipped sample: principal point off by {err_c:.1f} px, focal off by {err_f:.3f} px')
 
 
 def check_pdbev10():

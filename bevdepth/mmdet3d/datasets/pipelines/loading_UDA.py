@@ -607,6 +607,11 @@ class PrepareImageInputs_UDA(object):
             intrins_actual[1, :] = resize * intrins_actual[1, :]
             intrins_actual[0, 2] = intrins_actual[0, 2] - crop[0]
             intrins_actual[1, 2] = intrins_actual[1, 2] - crop[1]
+            # Gen2E (PDBEV-9): a horizontal flip mirrors the principal point, u' = W_crop - u
+            # (the flip of img_transform). Upstream applied only resize and crop. Rotation (+-5.4
+            # deg) cannot be written as a pinhole intrinsic and stays out, as upstream.
+            if flip:
+                intrins_actual[0, 2] = (crop[2] - crop[0]) - intrins_actual[0, 2]
             # for convenience, make augmentation matrices 3x3
             post_tran = torch.zeros(3)
             post_rot = torch.eye(3)
