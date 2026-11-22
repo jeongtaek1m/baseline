@@ -37,9 +37,16 @@
   - 스모크 테스트(R1 mini, 1 epoch)에서 학습과 평가가 끝까지 돌았어요. depth 라벨 정렬도 이미지로 확인했어요.
 - **vanilla BEVDepth R1 학습을 시작했어요.** GPU 0·1을 쓰고, 출력은 `bevdepth/work_dirs/bevdepth-r50-pccr/R1/`, 로그는 `logs/train_bevdepth-r50-pccr_R1.log`예요. epoch당 473 iter, 24 epoch이에요.
 
+- **vanilla BEVDepth 결과:** 학습은 14:50에 끝났어요(R1 val 33.5). 14개 리그 test 평가 결과 7-class mAP가 R1 30.4예요. 행 전체는 [results.md](results.md)에 있어요.
+  - BEVDet† 대비 R1과 가까운 리그는 5~7점 높고, 먼 리그(R3, R6, R7)는 2~3점 낮아요.
+- **PCCR 공식 모델의 좌표계 조사 (사용자 요청):** [pccr_dataset.md](pccr_dataset.md) "PCCR 공식 모델의 좌표계"에 정리했어요.
+  - BEVDet만 ego 좌표계이고 PETR·BEVFusion·Fast-BEV는 LiDAR 좌표계예요. 리그별 높이 보정은 없어요.
+  - LiDAR 좌표계에서 높이 여러 층을 샘플링하는 PETR·Fast-BEV만 R6·R9에서 0.0이에요.
+  - 부수적으로, PETR·BEVFusion·Fast-BEV 어댑터는 평가 박스의 w/l이 뒤바뀌고 yaw가 반전돼요(ASE 0.73, AOE ≈ π/2). mAP에는 영향이 없어요.
+- **결정:** BEVFormer-S는 LiDAR 좌표계(A)로 학습해요([decisions.md](decisions.md)).
+
 ## 다음 할 일
 
-1. vanilla BEVDepth 학습이 끝나면 14개 리그를 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/bevdepth-r50-pccr/R1 0,1`
-2. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). BEVFormer-S 좌표계, 기존 BEVFormer-S 코드, PD-BEV head 구성, 공식 코드 버그 처리가 남았어요.
-3. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S 재현을 확인해요(4장).
-4. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.
+1. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S를 R1에서 학습해요(4장). 학습 설정(배치·lr, 해상도, 사전학습 가중치)은 사용자 확인이 필요해요.
+2. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). 기존 BEVFormer-S 코드, PD-BEV head 구성, 공식 코드 버그 처리가 남았어요.
+3. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.

@@ -134,6 +134,61 @@ python -I tools/pccr_box_z_check.py render R1 logs/zcheck/box_z_R1.jpg
 - 그래서 학습 박스가 h/2만큼 위로 떠요(car 0.77 m, adult 0.93 m, bus 1.28 m).
 - 그래도 † 수치는 영향을 받지 않아요. nuScenes 지표가 z를 보지 않기 때문이에요(BEV 2D 중심 거리, ASE는 중심을 맞춘 뒤 IoU).
 
+## PCCR 공식 모델의 좌표계 (2026-11-22)
+
+PCCR은 모델마다 **원래 레포의 기본 좌표계를 그대로** 썼고, 리그별 높이 보정은 하지 않았어요. 어댑터·설정은 `third_party/pccr/models/`에서, 모델 내부 동작은 업스트림 코드에서 확인했어요(아래 "근거").
+
+| 모델 | 박스·BEV 좌표계 | 높이 방향 샘플링 | LiDAR 높이가 바뀔 때 | 박스 z 읽기 | 공식 7-class mAP R1 / R3 / R7 / R6 / R9 |
+|---|---|---|---|---|---|
+| BEVDet† | ego (모든 리그에서 지면 z=0) | z 1칸, −6~6 m | 영향 없음 | 중심 (맞음) | 25.2 / 9.0 / 11.2 / 8.2 / 5.1 |
+| BEVFusion-C† | LiDAR | z 1칸, LiDAR 기준 −10~10 m | 거의 없음 (칸 하나가 높이를 다 덮어요) | 바닥 (h/2 뜸) | 26.0 / 14.6 / 12.8 / 10.6 / 6.5 |
+| PETR† | LiDAR | 3D 위치 임베딩(z를 −10~10 m로 정규화) + 학습된 3D 기준점 900개(z −6~6 m) | 있음: 위치 임베딩과 기준점의 지면 대비 높이가 R6에서 2.9 m 어긋나요 | 바닥 (h/2 뜸) | 21.1 / 10.7 / 5.8 / 0.0 / 0.0 |
+| Fast-BEV† | LiDAR | voxel 6층, LiDAR z −3.99 / −2.66 / −1.33 / 0 / +1.33 / +2.66 m | 큼: 층마다 채널이 따로라서 층의 높이 의미가 바뀌어요 | 중심 (맞음) | 12.9 / 9.0 / 9.0 / 0.0 / 0.0 |
+
+Fast-BEV voxel 층의 지면 기준 높이예요.
+
+| 리그 | 지면 기준 층 높이 (m) |
+|---|---|
+| R1 계열 (LiDAR 1.86 m) | −2.13, −0.80, +0.53, +1.86, +3.19, +4.52 |
+| R4, R5, R8 (1.50 m) | −2.49, −1.16, +0.17, +1.50, +2.83, +4.16 |
+| R9 (4.18 m) | +0.19, +1.52, +2.85, +4.18, +5.51, +6.84 |
+| R6 (4.80 m) | +0.81, +2.14, +3.47, +4.80, +6.13, +7.46 |
+
+**보이는 패턴**
+
+- LiDAR 좌표계에서 높이 여러 층을 샘플링하는 PETR과 Fast-BEV만, LiDAR가 높은 R6·R9에서 0.0이에요. 높이가 1칸인 BEVDet(ego)과 BEVFusion(LiDAR)은 같은 리그에서 5~11점이에요.
+- LiDAR 높이가 R1과 같은 R3·R7에서는 PETR·Fast-BEV도 R1 성능의 27~70%를 유지해요. 그래서 카메라 변화보다 높이 차이 때문일 가능성이 높아요. 다만 인과를 직접 실험하지는 않았어요.
+- BEVFormer-S도 LiDAR 좌표계에서 pillar마다 높이 4점을 샘플링해요(위 표). 그래서 LiDAR 좌표계로 학습하면 R6·R9에서 PETR·Fast-BEV처럼 떨어질 가능성이 높아요.
+
+**박스 형식 문제 (PETR·BEVFusion·Fast-BEV, NDS만 영향)**
+
+- 세 어댑터는 mmdet3d 1.x 형식 `gt_boxes`(l, w, h, yaw)를 변환 없이 학습 타깃으로 써요.
+- 평가할 때는 예측을 0.x 식(`yaw = -yaw - π/2`, `size = dims`)으로 되돌려요(`PETR/pccr_dataset.py:436-438`, `BEVFusion/pccr_dataset.py:412-414`, `Fast-BEV/pccr_dataset.py:443-444`).
+- 그래서 평가 박스의 w/l이 뒤바뀌고 yaw가 반전돼요. 공식 결과에서도 확인돼요(R1).
+  - car 크기 오차(ASE)가 0.73~0.74예요. car 크기에서 w/l을 바꿨을 때의 이론값이 0.73이에요.
+  - 방향 오차(AOE)는 모든 클래스에서 1.35~1.70으로 무작위 수준(≈π/2)이에요.
+  - 같은 지표가 BEVDet은 ASE 0.22 / car AOE 1.00, 우리 BEVDepth는 ASE 0.22 / car AOE 0.69예요.
+- mAP는 중심 거리만 보기 때문에 **표의 † 수치에는 영향이 없어요.** NDS·mASE·mAOE만 틀려요.
+
+**근거**
+
+- **BEVDet**
+  - `ann_infos`(ego)를 `LoadAnnotations`·`BEVAug`가 `origin=(0.5, 0.5, 0.5)`로 읽어요(업스트림 dev3.0 `loading.py`).
+  - grid는 `z=[-6, 6, 12]`예요(`bevdet-r50-pccr.py:486-490`).
+  - 평가는 ego 박스를 `ego_cam`의 ego pose로 global로 옮겨요(`BEVDet/pccr_dataset.py:250-264`). w/l 순서도 `box[[4, 3, 5]]`로 맞춰요.
+- **PETR**
+  - `lidar2img`를 `sensor2lidar`로 만들어요(`PETR/pccr_dataset.py:349-363`).
+  - `position_range=[-61.2, -61.2, -10, 61.2, 61.2, 10]`, `pc_range` z는 [−6, 6]이에요(설정 345·377·407행).
+  - 위치 임베딩은 `img2lidar`로 만든 3D 좌표를 `position_range`로 정규화해요(업스트림 `petr_head.py`).
+- **BEVFusion**
+  - `zbound=[-10, 10, 20]`이라 z가 1칸이에요(`configs.yaml:532-535`).
+  - geometry는 `camera2lidar`로 계산해요(업스트림 `vtransforms/base.py`).
+- **Fast-BEV**
+  - `n_voxels=[250, 250, 6]`, `voxel_size=[0.64, 0.64, 1.33]`예요(설정 84-85행).
+  - `origin`은 어댑터에서 0이고(`Fast-BEV/pccr_dataset.py:282`), `KittiSetOrigin`이 pc range 중심(0, 0, 0)으로 다시 넣어요.
+  - 업스트림 `get_points`가 `origin - n_voxels / 2 * voxel_size`부터 `voxel_size` 간격으로 점을 만들어요.
+  - 박스는 업스트림 `NuScenesDataset.get_ann_info`가 `origin=(0.5, 0.5, 0.5)`로 읽어요.
+
 ## 포팅할 때 주의할 점
 
 - **박스 좌표계:** mmdet3d 1.0 형식 `[x,y,z,l,w,h,yaw]`이고 z는 박스 중심이에요(`pccr/lib/data_converter/nuscenes_converter.py:423`). BEVFormer(mmdet3d 0.17.1)로 쓰려면 SECOND 형식으로 변환해야 해요.

@@ -9,14 +9,14 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 
 | 표의 행 | View transform | Base 코드 | 상태 |
 |---|---|---|---|
-| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | R1 학습 중 (2026-11-22, GPU 0·1) |
+| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | **완료** (2026-11-22): R1 30.4 ([results.md](docs/results.md)) |
 | BEVDepth + PD-BEV | Forward | `bevdepth/` | 준비 중 |
 | BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 mmdet3d 1.0 기준으로 재구현) | 준비 중 |
-| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임) | 준비 중 |
+| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, LiDAR 좌표계) | 포팅 중 |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
 | + UniDrive, + CoIn3D | — | — | 이번 범위에서 제외 |
 
-진행 기록은 [docs/progress.md](docs/progress.md)에, 결정 사항과 근거는 [docs/decisions.md](docs/decisions.md)에 있어요.
+결과 수치는 [docs/results.md](docs/results.md)에, 진행 기록은 [docs/progress.md](docs/progress.md)에, 결정 사항과 근거는 [docs/decisions.md](docs/decisions.md)에 있어요.
 
 ## 레포 구조
 
@@ -90,6 +90,7 @@ python tools/check_bevdepth_upstream.py /path/to/BEVDet   # 2ae6a02 체크아웃
 | [docs/pccr_dataset.md](docs/pccr_dataset.md) | PCCR 데이터 구조, 14개 리그 정의, 주의점 |
 | [docs/environment.md](docs/environment.md) | conda env 2개 구성과 4090 관련 메모 |
 | [docs/porting_plan.md](docs/porting_plan.md) | baseline별 포팅 계획, 코드 분석에서 찾은 버그·하드코딩 |
+| [docs/results.md](docs/results.md) | 표에 들어갈 결과 수치와 실행 정보 |
 | [docs/progress.md](docs/progress.md) | 날짜별 진행 기록 |
 
 ## Upstream 출처

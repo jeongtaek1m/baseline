@@ -16,6 +16,7 @@
 | 2026-11-22 | **BEVDepth base는 PD-BEV 레포를 그대로 쓴다** (BEVDet dev2.0 @2ae6a02에서 갈라진 트리). | 사용자가 재확인했어요. 깨끗한 원본 BEVDet(@2ae6a02 또는 dev3.0 @26144be)도 선택지로 제시했지만 PD-BEV 트리를 골랐어요. 주의사항은 바로 아래에 있어요. |
 | 2026-11-22 | **학습도 7개 클래스**(car, truck, bus, bicycle, motorcycle, adult, child)로 한다. traffic_sign과 traffic_light는 학습에서 빼고, 보고는 7-class mAP(test split)로 한다. | 사용자 지시("학습할 때 traffic light랑 빼고"). PCCR 공식 † 행은 9개 클래스로 학습했으니, 우리 행과 학습 클래스 수가 달라요. |
 | 2026-11-22 | BEVDepth 계열 학습 설정은 **PCCR BEVDet 기준**(GPU 2장 × 4샘플, AdamW 2e-4, 24 epoch, 384×704)으로 한다. 방법별 추가 손실 가중치만 원 논문 값을 쓴다. | 사용자 승인. BEVFormer-S 학습 설정은 아직 정하지 않았어요(아래 "기존 BEVFormer-S 코드"와 함께 정해요). |
+| 2026-11-22 | **BEVFormer-S는 LiDAR 좌표계로 학습한다** (선택지 A, 원본 BEVFormer 그대로). 지면 기준 고정 좌표계(B)는 쓰지 않는다. | 사용자 결정("a ㄱㄱ"). PCCR도 LiDAR 계열 모델(PETR, BEVFusion, Fast-BEV)을 리그별 높이 보정 없이 LiDAR 좌표계로 돌렸어요([pccr_dataset.md](pccr_dataset.md) "PCCR 공식 모델의 좌표계"). 그 가운데 높이 여러 층을 샘플링하는 PETR·Fast-BEV는 R6·R9에서 0.0이었어요. BEVFormer-S도 같은 구조라 R6·R9에서 크게 떨어질 수 있어요. 나중에 B로 바꾸려면 데이터셋 어댑터 한 곳만 고치면 돼요. |
 
 ### BEVDepth base = PD-BEV 트리: 반드시 지킬 것
 
@@ -31,6 +32,5 @@ PD-BEV는 원본 BEVDet 파일 16개를 직접 고쳤어요. 그래서 그 트�
 
 | 항목 | 제안(기본값) | 왜 중요한가 |
 |---|---|---|
-| 기존 BEVFormer-S(PCCR) 코드 | 있으면 그 위에 PD-BEV를 붙이고, 없으면 새로 만든 뒤 vanilla 수치(R1 21.1)가 재현되는지부터 확인 | 원본 BEVFormer는 `num_cams=6`이 하드코딩돼 있어서 카메라 8대인 R1부터 크래시가 나요. 리그마다 LiDAR 높이(1.5~4.8 m)와 박스 좌표계 변환도 처리해야 해요. 기존 행과 같은 방식으로 처리해야 비교가 공정해요. |
-| BEVFormer-S 기준 좌표계 (z 기준) | (A) 표준대로 LiDAR 좌표계를 쓴다. (B) 지면 기준 좌표계를 쓴다: ego 좌표계를 R1의 LiDAR 위치(−0.46, 0, 1.86)만큼 옮긴 고정 좌표계예요. R1은 표준과 똑같고, 다른 리그도 지면 높이가 같아져요. | LiDAR 높이가 리그마다 1.50~4.80 m라서, LiDAR 좌표계에서는 pillar 샘플 높이가 지면 기준으로 리그마다 최대 2.9 m 달라져요([pccr_dataset.md](pccr_dataset.md) "박스 z 확인"). 표의 기존 BEVFormer-S 행을 어떻게 돌렸는지와 맞춰야 해요. BEVDepth 계열은 ego 좌표계라 해당 없어요. |
+| 기존 BEVFormer-S(PCCR) 코드 | 답이 없어서 기본값대로 새로 만들어요(2026-11-22). 공식 BEVFormer 위에 PCCR 어댑터를 붙이고, vanilla 수치(R1 21.1)가 재현되는지부터 확인해요. 기존 코드가 있으면 그 방식에 맞춰요. | 원본 BEVFormer는 `num_cams=6`이 하드코딩돼 있어서 카메라 8대인 R1부터 크래시가 나요. `cams_embeds`, 해상도, 학습 설정도 기존 행과 같은 방식이어야 비교가 공정해요. 기존 행의 R6·R9 값이 0 근처면 LiDAR 좌표계로 돌렸다는 뜻이에요. |
 | PD-BEV head 구성 | PD-BEV의 `bev_loss`는 head task 0이 클래스 1개일 때만 동작해요. PCCR 기준 head는 9-class 단일 task예요. | head를 car 단독 task가 앞에 오는 다중 task로 바꿀지, `bev_loss`를 고칠지 정해야 해요. |
