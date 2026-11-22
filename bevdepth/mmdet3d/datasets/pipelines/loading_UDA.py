@@ -829,8 +829,10 @@ class PointToMultiViewDepth_UDA(object):
 @PIPELINES.register_module()
 class Load3DBoxesHeatmap(object):
 
-    def __init__(self, classes, downsample_feature=8, aug_flag=True):
+    def __init__(self, classes, downsample_feature=8, aug_flag=True, point_cloud_range=None):
         self.classes = classes
+        # Gen2E (PDBEV-5): BEV range of ObjectRangeFilter; None keeps upstream (no range filter).
+        self.point_cloud_range = point_cloud_range
         self.draw_gaussian = draw_heatmap_gaussian
         self.downsample = 16
         self.aug_flag = aug_flag
@@ -877,6 +879,22 @@ class Load3DBoxesHeatmap(object):
             valid, np.logical_and(points[:, 0] < width, points[:, 1] < height))
         return valid
 
+    def filter_objects(self, gt_boxes, gt_labels, results):
+        """Gen2E (PDBEV-5): keep the objects the 3D head is trained on.
+
+        Upstream built the 2D targets from the raw ann_infos, before ObjectNameFilter and
+        ObjectRangeFilter (which only touch gt_bboxes_3d). Keep labels 0..C-1 whose centre, after
+        the BEV augmentation (img_inputs[6]), lies inside the BEV range, as those filters do.
+        """
+        gt_labels = np.asarray(gt_labels, dtype=np.int64).reshape(-1)
+        keep = (gt_labels >= 0) & (gt_labels < self.classes_num)
+        if self.point_cloud_range is not None and len(gt_boxes):
+            bda = np.asarray(results['img_inputs'][6], dtype=np.float64)[:3, :3]
+            xy = (np.asarray(gt_boxes[:, :3], dtype=np.float64) @ bda.T)[:, :2]
+            x0, y0, _, x1, y1, _ = self.point_cloud_range
+            keep &= (xy[:, 0] > x0) & (xy[:, 0] < x1) & (xy[:, 1] > y0) & (xy[:, 1] < y1)
+        return gt_boxes[keep], gt_labels[keep]
+
     def get_2D_heatmap(self, results):
         gt_boxes, gt_labels = copy.deepcopy(results['ann_infos'])
         imgs, rots, trans, intrins, post_rots, post_trans, bda, intrins_actuals = results['img_inputs']
@@ -885,6 +903,7 @@ class Load3DBoxesHeatmap(object):
             gt_boxes = np.zeros((0, 9))
         # print('gt_boxes', gt_boxes.shape)
         gt_boxes = gt_boxes[:, 0:7]
+        gt_boxes, gt_labels = self.filter_objects(gt_boxes, gt_labels, results)  # Gen2E (PDBEV-5)
         num_boxes, _ = gt_boxes.shape
         cam_names = results['cam_names']
         cam_data = results['curr']['cams'][cam_names[0]]
@@ -1025,6 +1044,7 @@ class Load3DBoxesHeatmap(object):
             gt_boxes = np.zeros((0, 9))
         # print('gt_boxes', gt_boxes.shape)
         gt_boxes = gt_boxes[:, 0:7]
+        gt_boxes, gt_labels = self.filter_objects(gt_boxes, gt_labels, results)  # Gen2E (PDBEV-5)
         num_boxes, _ = gt_boxes.shape
         cam_names = results['cam_names']
         cam_data = results['curr']['cams'][cam_names[0]]
