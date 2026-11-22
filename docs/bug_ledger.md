@@ -85,6 +85,8 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | PASS: 최대 차이 0 (부동소수점 수준) |  |
 | PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | PASS: 위쪽 행 12 (학습과 같은 아래 정렬) |  |
 | PDBEV-17 | conv 가중치를 무작위로 다시 뽑아 학습 뒤 상태를 흉내 내고, 세 보조 head의 sigmoid(출력) 최솟값을 재요. 마지막 연산이 ReLU면 어떤 가중치에서도 0.5 이상이에요. | FAIL: Img_Aux 0.500, Img_Aux_Dy 0.500, BEV_Aux height 0.500 (ReLU 바닥) | PASS: conv 가중치를 무작위로 다시 뽑았을 때 Img_Aux 0.029, Img_Aux_Dy 0.354, BEV_Aux height 0.083 (공식 코드는 같은 조건에서도 0.500) |  |
+| PDBEV-11 | GPU 스모크(`tools/bugrepro/pdbev_smoke.py`): PD-BEV-A 설정으로 R1 mini 2샘플 학습 1 step 동안 `BEV_aux` forward 횟수를 세요. | (공식 코드: 3번, 코드 읽기) | PASS: 1번. 같은 step에서 모든 손실이 유한하고, 학습 파라미터 462/462개에 그래디언트가 있어요. | |
+| PDBEV-15 | 같은 스크립트에서 test 파이프라인 샘플 하나로 `simple_test`를 돌려요. | (공식 코드: TypeError, 코드 읽기) | PASS: 박스 379개 | |
 
 ## UDGA: 재구현할 때 의도대로 만들 부분
 
