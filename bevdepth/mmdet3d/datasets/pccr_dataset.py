@@ -441,3 +441,13 @@ class PCCRDataset(NuScenesDataset):
         detail[f'{metric_prefix}/NDS'] = self._compute_nds(metrics)
         detail[f'{metric_prefix}/mAP'] = metrics['mean_ap']
         return detail
+
+    def evaluate(self, results, save_path=None, **kwargs):
+        """Gen2E: make PD-BEV's extra positional `save_path` optional.
+
+        The PD-BEV tree changed NuScenesDataset.evaluate to
+        `evaluate(results, save_path, ...)` (the argument is unused). mmdet's EvalHook
+        calls `evaluate(results, logger=..., **eval_kwargs)` and would fail. PD-BEV's
+        tools/test.py still passes save_path positionally, so both call styles work.
+        """
+        return super().evaluate(results, save_path, **kwargs)
