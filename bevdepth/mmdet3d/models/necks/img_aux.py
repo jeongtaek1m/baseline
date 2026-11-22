@@ -223,6 +223,13 @@ class Img_Aux(nn.Module):
         else:
             assert False
         self.layers = nn.Sequential(*layers)
+        # Gen2E (PDBEV-17): linear output layer. Every stage ends in BN + ReLU (or a block that ends
+        # in ReLU), so upstream outputs were >= 0 and sigmoid heatmaps / IFV heights could not go
+        # below 0.5. The 1x1 conv starts as the identity, i.e. as upstream at initialisation.
+        self.out_conv = nn.Conv2d(num_channels[-1], num_channels[-1], kernel_size=1)
+        with torch.no_grad():
+            self.out_conv.weight.copy_(torch.eye(num_channels[-1]).view(num_channels[-1], num_channels[-1], 1, 1))
+            self.out_conv.bias.zero_()
         self.with_cp = with_cp
 
         # loss_cls = dict(type='GaussianFocalLoss', reduction='mean')
@@ -390,6 +397,7 @@ class Img_Aux(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
         unused_loss = 0.0 * feats.mean().mean().mean().mean()
         cls_pre = torch.sigmoid(feats[:, 0:self.class_num, ...])
         ann_pre = feats[:, self.class_num:, ...]
@@ -411,6 +419,7 @@ class Img_Aux(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
         heatmaps = torch.sigmoid(feats[:, 0:self.class_num, ...])
         return heatmaps, feats.mean().mean().mean().mean()
 
@@ -429,6 +438,7 @@ class Img_Aux(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
 
         # feats = self.layers(x)
         # feats = x
@@ -586,6 +596,13 @@ class Img_Aux_Dy(nn.Module):
         else:
             assert False
         self.layers = nn.Sequential(*layers)
+        # Gen2E (PDBEV-17): linear output layer. Every stage ends in BN + ReLU (or a block that ends
+        # in ReLU), so upstream outputs were >= 0 and sigmoid heatmaps / IFV heights could not go
+        # below 0.5. The 1x1 conv starts as the identity, i.e. as upstream at initialisation.
+        self.out_conv = nn.Conv2d(num_channels[-1], num_channels[-1], kernel_size=1)
+        with torch.no_grad():
+            self.out_conv.weight.copy_(torch.eye(num_channels[-1]).view(num_channels[-1], num_channels[-1], 1, 1))
+            self.out_conv.bias.zero_()
         self.with_cp = with_cp
 
 
@@ -714,6 +731,7 @@ class Img_Aux_Dy(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
         unused_loss = 0.0 * feats.mean().mean().mean().mean()
         cls_pre = torch.sigmoid(feats[:, 0:self.class_num, ...])
         ann_pre = feats[:, self.class_num:, ...]
@@ -735,6 +753,7 @@ class Img_Aux_Dy(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
         heatmaps = torch.sigmoid(feats[:, 0:self.class_num, ...])
         return heatmaps, feats.mean().mean().mean().mean()
 
@@ -759,6 +778,7 @@ class Img_Aux_Dy(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
 
 
 
@@ -843,6 +863,13 @@ class BEV_Aux(nn.Module):
             assert False
 
         self.BEV_features = nn.Sequential(*features)
+        # Gen2E (PDBEV-17): linear output layer. Every stage ends in BN + ReLU (or a block that ends
+        # in ReLU), so upstream outputs were >= 0 and sigmoid heatmaps / IFV heights could not go
+        # below 0.5. The 1x1 conv starts as the identity, i.e. as upstream at initialisation.
+        self.out_conv = nn.Conv2d(num_channels[-1], num_channels[-1], kernel_size=1)
+        with torch.no_grad():
+            self.out_conv.weight.copy_(torch.eye(num_channels[-1]).view(num_channels[-1], num_channels[-1], 1, 1))
+            self.out_conv.bias.zero_()
         #self.BEV_height = nn.Sequential(*BEV_heights)
         self.with_cp = with_cp
         self.loss_cls = GaussianFocalLoss()
@@ -863,6 +890,7 @@ class BEV_Aux(nn.Module):
                 feats.append(x_tmp)
         if type(feats) in [list, tuple]:
             feats = feats[-1]
+        feats = self.out_conv(feats)  # Gen2E (PDBEV-17)
 
 
         #print('feats', feats.size())

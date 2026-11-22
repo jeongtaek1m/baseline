@@ -42,7 +42,7 @@
 | PDBEV-14 | `models/necks/img_aux.py:316-352, 640-676` | 회귀 손실을 전체 픽셀로 평균해요(positive는 몇 %뿐이에요). | B25 | 미확인 | 속성 손실의 실제 가중치가 아주 작아요. 논문 표기를 확인한 뒤 정해요. | **공식 유지**(2026-11-22 결정: 논문에 정규화 명시 없음) | |
 | PDBEV-15 | `models/detectors/pcbev.py:62-69, 110-124` | `PCBEV_DG.simple_test`가 고장 나 있어요(시그니처 불일치, 학습 전용 입력 필요). | B07 → C03 confirmed | 코드에서 확인 | 공식 평가는 `BEVDepth_DG` 설정으로 해요. 우리도 추론은 기본 검출기 경로로 해요. | | |
 | PDBEV-16 | `datasets/pipelines/loading_UDA.py:260` | 테스트 때 crop이 무작위예요. | B21 | 미확인 | 평가가 실행마다 달라질 수 있어요. | | |
-| PDBEV-17 | `models/necks/img_aux.py:190-198, 214-222` (Img_Aux, Img_Aux_Dy, BEV_Aux 모두) | 보조 head의 마지막 단이 `ConvTranspose → BN → ReLU`(또는 ReLU로 끝나는 블록)라서 출력이 항상 0 이상이에요. 그래서 heatmap = sigmoid(출력)이 **0.5 밑으로 못 내려가요.** IFV의 `sigmoid(F_height)`도 0.5~1에 갇혀요. | 2026-11-22 매핑 에이전트 (CPU에서 출력 범위 검사) | 코드에서 확인 (`img_aux.py:190-198, 405-414`) | 배경을 "물체 없음"으로 예측할 수 없어요. bev_loss는 eq(0) 버그와 겹쳐서 사실상 아무 일도 안 해요. | | |
+| PDBEV-17 | `models/necks/img_aux.py:190-198, 214-222` (Img_Aux, Img_Aux_Dy, BEV_Aux 모두) | 보조 head의 마지막 단이 `ConvTranspose → BN → ReLU`(또는 ReLU로 끝나는 블록)라서 출력이 항상 0 이상이에요. 그래서 heatmap = sigmoid(출력)이 **0.5 밑으로 못 내려가요.** IFV의 `sigmoid(F_height)`도 0.5~1에 갇혀요. | 2026-11-22 매핑 에이전트 (CPU에서 출력 범위 검사) | 코드에서 확인 (`img_aux.py:190-198, 405-414`) | 배경을 "물체 없음"으로 예측할 수 없어요. bev_loss는 eq(0) 버그와 겹쳐서 사실상 아무 일도 안 해요. | Img_Aux, Img_Aux_Dy, BEV_Aux 끝에 1×1 선형 conv(`out_conv`)를 더했어요. identity로 초기화해서 학습 시작 시점의 출력은 공식과 같아요. head 출력을 만드는 7곳(`feats = feats[-1]` 다음)에 적용했어요. |  |
 | PDBEV-18 | `models/detectors/pcbev.py` + 평가 훅 | `PCBEV_DG`로 학습하면서 epoch마다 평가하면, 첫 평가에서 PDBEV-15 때문에 크래시가 나요. 공식 학습은 평가 간격(24)이 학습 epoch(23)보다 길어서 평가가 한 번도 안 돌았어요. | 2026-11-22 매핑 에이전트 | 코드 읽기 | 우리 설정(epoch마다 평가)에서는 1 epoch 뒤에 멈춰요. | PDBEV-15를 고치면 같이 해결돼요. | |
 
 **논문과 코드가 다른 값:** yaw 섭동은 논문 부록 C.1 본문에서 0.2 rad, 공식 설정에서 0.4 rad예요(B22 → C22). 논문 그림 9와 표 1 수치는 0.4와 맞아서, 사용자 결정으로 PD-BEV-A는 0.4를 써요(2026-11-22).
@@ -84,7 +84,7 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | | |
 | PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | | |
 | PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | | |
-| PDBEV-17 | 무작위 가중치·입력에서 세 보조 head의 sigmoid(출력) 최솟값을 재요. | FAIL: Img_Aux 0.500, Img_Aux_Dy 0.500, BEV_Aux height 0.500 (ReLU 바닥) | | |
+| PDBEV-17 | conv 가중치를 무작위로 다시 뽑아 학습 뒤 상태를 흉내 내고, 세 보조 head의 sigmoid(출력) 최솟값을 재요. 마지막 연산이 ReLU면 어떤 가중치에서도 0.5 이상이에요. | FAIL: Img_Aux 0.500, Img_Aux_Dy 0.500, BEV_Aux height 0.500 (ReLU 바닥) | PASS: conv 가중치를 무작위로 다시 뽑았을 때 Img_Aux 0.029, Img_Aux_Dy 0.354, BEV_Aux height 0.083 (공식 코드는 같은 조건에서도 0.500) |  |
 
 ## UDGA: 재구현할 때 의도대로 만들 부분
 

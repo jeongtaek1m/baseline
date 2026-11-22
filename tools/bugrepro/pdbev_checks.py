@@ -273,10 +273,19 @@ def _hook_bev_aux(m, seen):
 
 
 def check_pdbev17():
-    """Aux heatmaps must be able to go below 0.5 (the head output must not end in a ReLU)."""
+    """Aux heatmaps must be able to go below 0.5 (the head output must not end in a ReLU).
+
+    All conv weights are redrawn at random (as after some training): with a ReLU as the last
+    operation the outputs stay >= 0 for any weights, with a linear output layer they do not.
+    """
     m = _build_aux()
+    g = torch.Generator().manual_seed(1)
     for v in m.values():
         v.eval()
+        for mod in v.modules():
+            if isinstance(mod, torch.nn.Conv2d):
+                with torch.no_grad():
+                    mod.weight.copy_(torch.randn(mod.weight.shape, generator=g) * 0.1)
     with torch.no_grad():
         h1 = m['img_aux'].get_heatmaps(torch.randn(2, 32, 12, 22))[0]
         h2 = m['bev_img_aux'].get_heatmaps(torch.randn(2, 16, 12, 22))[0]
