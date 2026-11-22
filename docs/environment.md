@@ -45,6 +45,10 @@ PCCR 공식 BEVDet Docker(`third_party/pccr/models/BEVDet/docker/Dockerfile`)와
 
 **확인한 것 (2026-11-21):** `pip check`에서 충돌이 없어요. `mmcv.ops`(MSDA 포함)가 import되고, 4090에서 CUDA 연산이 돼요.
 
+**고친 것 (2026-11-22):** BEVFormer 플러그인 import가 실패했어요.
+- 원인: env에 Pillow 10.4가 들어가 있었어요. 플러그인이 import하는 detectron2 0.6(`dd3d`)은 Pillow 10에서 없어진 `PIL.Image.LINEAR`를 써요.
+- 조치: Pillow를 9.5.0으로 고정했어요(`tools/setup_env_bevformer.sh`).
+
 ## RTX 4090 관련 메모
 
 - **sm_89 미지원:** CUDA 11.1과 11.3은 sm_89를 타깃으로 빌드하지 못해요. 그래서 CUDA 확장은 sm_86으로 빌드해요(`TORCH_CUDA_ARCH_LIST=8.6`). 같은 major 아키텍처라 바이너리 호환으로 sm_89에서 그대로 돌아요. 실제 커널 실행으로 확인했어요.

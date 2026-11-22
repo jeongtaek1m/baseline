@@ -44,6 +44,9 @@ pip install einops fvcore seaborn iopath==0.1.9 timm==0.6.13 typing-extensions==
   scikit-image==0.19.3 setuptools==59.5.0 yapf==0.40.1 nuscenes-devkit==1.1.9
 # detectron2: official guide installs master; v0.6 is the last tag that builds with torch 1.9.
 pip install 'git+https://github.com/facebookresearch/detectron2.git@v0.6'
+# detectron2 0.6 uses PIL.Image.LINEAR, which Pillow 10 removed; the BEVFormer plugin imports
+# detectron2 (dd3d), so importing the plugin fails with Pillow >= 10 (found 2026-11-22).
+pip install 'pillow==9.5.0'
 
 python - <<'EOF'
 import torch, mmcv, mmdet, mmseg, mmdet3d
