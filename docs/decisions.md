@@ -15,8 +15,10 @@
 | 2026-11-21 | 문서는 한국어로 쓴다. | 사용자 응답이 없어서 기본값으로 정했어요. 영어로 바꾸기 쉬워요. |
 | 2026-11-22 | **BEVDepth base는 PD-BEV 레포를 그대로 쓴다** (BEVDet dev2.0 @2ae6a02에서 갈라진 트리). | 사용자가 재확인했어요. 깨끗한 원본 BEVDet(@2ae6a02 또는 dev3.0 @26144be)도 선택지로 제시했지만 PD-BEV 트리를 골랐어요. 주의사항은 바로 아래에 있어요. |
 | 2026-11-22 | **학습도 7개 클래스**(car, truck, bus, bicycle, motorcycle, adult, child)로 한다. traffic_sign과 traffic_light는 학습에서 빼고, 보고는 7-class mAP(test split)로 한다. | 사용자 지시("학습할 때 traffic light랑 빼고"). PCCR 공식 † 행은 9개 클래스로 학습했으니, 우리 행과 학습 클래스 수가 달라요. |
-| 2026-11-22 | BEVDepth 계열 학습 설정은 **PCCR BEVDet 기준**(GPU 2장 × 4샘플, AdamW 2e-4, 24 epoch, 384×704)으로 한다. 방법별 추가 손실 가중치만 원 논문 값을 쓴다. | 사용자 승인. BEVFormer-S 학습 설정은 아직 정하지 않았어요(아래 "기존 BEVFormer-S 코드"와 함께 정해요). |
-| 2026-11-22 | **BEVFormer-S는 LiDAR 좌표계로 학습한다** (선택지 A, 원본 BEVFormer 그대로). 지면 기준 고정 좌표계(B)는 쓰지 않는다. | 사용자 결정("a ㄱㄱ"). PCCR도 LiDAR 계열 모델(PETR, BEVFusion, Fast-BEV)을 리그별 높이 보정 없이 LiDAR 좌표계로 돌렸어요([pccr_dataset.md](pccr_dataset.md) "PCCR 공식 모델의 좌표계"). 그 가운데 높이 여러 층을 샘플링하는 PETR·Fast-BEV는 R6·R9에서 0.0이었어요. BEVFormer-S도 같은 구조라 R6·R9에서 크게 떨어질 수 있어요. 나중에 B로 바꾸려면 데이터셋 어댑터 한 곳만 고치면 돼요. |
+| 2026-11-22 | BEVDepth 계열 학습 설정은 **PCCR BEVDet 기준**(GPU 2장 × 4샘플, AdamW 2e-4, 24 epoch, 384×704)으로 한다. 방법별 추가 손실 가중치만 원 논문 값을 쓴다. | 사용자 승인. BEVFormer-S 학습 설정은 아래에 따로 있어요. |
+| 2026-11-22 | ~~BEVFormer-S는 LiDAR 좌표계로 학습한다 (선택지 A).~~ 같은 날 아래 결정으로 바뀌었어요. | 사용자 결정("a ㄱㄱ")이었어요. 이후 PCCR 공식 모델 조사를 보고 사용자가 다시 정했어요. |
+| 2026-11-22 | **BEVFormer-S는 차량 고정 좌표계로 학습한다.** 축은 ego와 같고, 원점은 모든 차량에서 R1의 LiDAR 장착 위치(ego 기준 x −0.46, z +1.86 m)예요. 설정값은 `pccr_ref2ego = [-0.46, 0, 1.86]`이에요. | 사용자: "lidar로 하면 차종마다 달라져서 ego로". LiDAR 좌표계는 차량마다 지면 높이가 1.50~4.80 m로 달라지고, PCCR에서 LiDAR 좌표계로 높이를 여러 층 샘플링한 PETR·Fast-BEV는 R6·R9에서 0.0이었어요. 이 원점을 쓰면 etron 리그 9개는 원래 LiDAR 좌표계와 수치까지 같고(확인함), 다른 차량은 지면이 z = −1.86으로 맞춰져요. BEVFormer z 범위([−5, 3])도 그대로예요. 순수 ego(지면 z=0)와는 평행이동만 다르고, 설정값을 `[0, 0, 0]`으로 바꾸고 z 범위를 1.86 m 올리면 돼요. 다른 cross-domain 연구도 원점을 지면 쪽으로 맞춰요([pccr_dataset.md](pccr_dataset.md) "다른 cross-domain 연구의 좌표계"). |
+| 2026-11-22 | **BEVFormer-S 학습 설정:** 배치 8(GPU 2장 × 1샘플 × gradient 누적 4회), AdamW lr 2e-4, 24 epoch, 입력 1280×720(배율 1.0), 백본은 ImageNet 가중치(detectron2 caffe R101, `resnet101_msra-6cc46731.pth`), CAN bus 끔. | 사용자 승인(네 가지 모두 추천안). 공식 small과 PCCR 모델들의 배치 8에 맞췄어요. FCOS3D(nuScenes 학습) 가중치는 쓰지 않아요. 속도 head 없음(PCCR PETR·BEVDet과 같음)과 `cams_embeds` 끔(카메라 수가 리그마다 달라서)은 강제되는 선택이라 따로 묻지 않았어요. |
 
 ### BEVDepth base = PD-BEV 트리: 반드시 지킬 것
 
@@ -32,5 +34,5 @@ PD-BEV는 원본 BEVDet 파일 16개를 직접 고쳤어요. 그래서 그 트�
 
 | 항목 | 제안(기본값) | 왜 중요한가 |
 |---|---|---|
-| 기존 BEVFormer-S(PCCR) 코드 | 답이 없어서 기본값대로 새로 만들어요(2026-11-22). 공식 BEVFormer 위에 PCCR 어댑터를 붙이고, vanilla 수치(R1 21.1)가 재현되는지부터 확인해요. 기존 코드가 있으면 그 방식에 맞춰요. | 원본 BEVFormer는 `num_cams=6`이 하드코딩돼 있어서 카메라 8대인 R1부터 크래시가 나요. `cams_embeds`, 해상도, 학습 설정도 기존 행과 같은 방식이어야 비교가 공정해요. 기존 행의 R6·R9 값이 0 근처면 LiDAR 좌표계로 돌렸다는 뜻이에요. |
+| 기존 BEVFormer-S(PCCR) 코드 | 답이 없어서 새로 만들었어요(2026-11-22). 공식 BEVFormer 위에 PCCR 어댑터를 붙였어요. 기존 코드가 있으면 알려 주세요. 그 방식과 비교해서 맞출게요. | 표의 기존 BEVFormer-S 행(R1 21.1, R1-c6 19.6, R1-c10 26.2 …)을 어떻게 만들었는지 몰라요. 좌표계, `cams_embeds`, 해상도, 학습 설정이 다르면 우리 행과 수치가 달라질 수 있어요. 기존 행의 R6·R9가 0 근처면 LiDAR 좌표계로 돌렸다는 뜻이에요. |
 | PD-BEV head 구성 | PD-BEV의 `bev_loss`는 head task 0이 클래스 1개일 때만 동작해요. PCCR 기준 head는 9-class 단일 task예요. | head를 car 단독 task가 앞에 오는 다중 task로 바꿀지, `bev_loss`를 고칠지 정해야 해요. |

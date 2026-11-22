@@ -126,7 +126,10 @@ python -I tools/pccr_box_z_check.py render R1 logs/zcheck/box_z_R1.jpg
 | R6 (4.80 m) | +0.30, +2.63, +4.97, +7.30 |
 
 - 그래서 R1에서 학습한 모델이 R6·R9에서는 다른 높이의 특징을 봐요. 카메라 리그와 상관없는 좌표계 차이가 결과에 섞일 수 있어요.
-- 어느 좌표계로 할지는 [decisions.md](decisions.md)의 "확인 필요"에 있어요.
+- **결정 (2026-11-22):** 차량 고정 좌표계로 학습해요. 원점은 모든 차량에서 R1의 LiDAR 장착 위치(ego 기준 x −0.46, z +1.86 m)예요.
+  - 그래서 모든 리그에서 샘플 높이가 위 표의 R1 계열 줄과 같아요.
+  - etron 리그는 원래 LiDAR 좌표계와 수치까지 같아요.
+  - 근거는 [decisions.md](decisions.md)에 있어요.
 
 **PCCR 공식 PETR·BEVFusion 로더:** 박스가 h/2만큼 떠서 학습돼요. **BEVFormer 쪽 템플릿으로 가져오면 안 돼요.**
 
@@ -188,6 +191,25 @@ Fast-BEV voxel 층의 지면 기준 높이예요.
   - `origin`은 어댑터에서 0이고(`Fast-BEV/pccr_dataset.py:282`), `KittiSetOrigin`이 pc range 중심(0, 0, 0)으로 다시 넣어요.
   - 업스트림 `get_points`가 `origin - n_voxels / 2 * voxel_size`부터 `voxel_size` 간격으로 점을 만들어요.
   - 박스는 업스트림 `NuScenesDataset.get_ann_info`가 `origin=(0.5, 0.5, 0.5)`로 읽어요.
+
+## 다른 cross-domain 연구의 좌표계 (2026-11-22)
+
+사용자 요청으로 다른 cross-domain·cross-sensor 3D 검출 연구가 좌표계를 어떻게 다루는지 조사했어요. 조사는 에이전트가 했고, "확인"은 제가 원문·코드를 직접 다시 읽은 항목이에요.
+
+| 연구 | 좌표계 | 높이·원점 정렬 | 확인 |
+|---|---|---|---|
+| **123D** (Dauner 외, arXiv 2605.08084, 2026-05) | 라이브러리는 ISO 8855 차체 좌표계예요. 검출 실험(§4.3)에서 쓴 좌표계는 적혀 있지 않아요. | 축은 통일했어요. §3.1에 "데이터셋마다 ego 원점이 다르다(지면, IMU 위치 등)"고 적혀 있고, 높이는 맞추지 않아요. §4.3은 PETR과 BEVFormer-S(단일 프레임, R50)로 vehicle 클래스, 50 m 이내, 속도·속성을 뺀 NDS를 써요. | 확인 (§3.1, §4.3) |
+| **ST3D / ST3D++** (LiDAR UDA) | 지면 원점(Waymo 차량 좌표계) | **맞춰요.** `SHIFT_COOR`로 점과 GT를 옮겨요: KITTI +1.6 m, nuScenes·Lyft +1.8 m. 평가 전에 되돌려요. | 확인 (`secondiou_st3d_car.yaml`의 `SHIFT_COOR: [0.0, 0.0, 1.6]`) |
+| **Zheng 외, CoRL 2023** (Cross-Dataset Sensor Alignment, 카메라 3D) | 데이터셋마다 LiDAR 또는 ego 좌표계 | **맞춰요.** 방법이 "camera intrinsic synchronization, extrinsic correction, **ego frame alignment**"이에요. 에이전트에 따르면 보충자료에 "원점 높이가 다르면 BEVDet 3D mAP가 거의 0"이라는 내용이 있어요. | 초록 확인, 보충자료는 미확인 |
+| **PD-BEV** (AAAI 2025, `bevdepth/`) | ego | **맞춰요.** CARLA DeepAccident 변환에서 박스와 카메라 위치의 z에 +1.9 m를 더해요(지붕 LiDAR → 지면). | 확인 (`bevdepth/tools/Deepaccident_converter.py:116,153`) |
+| **UDGA** (NeurIPS 2024) | LiDAR (`sensor2lidar`) | 공개 코드에서는 z를 옮기지 않아요. | 확인 (`third_party/UDGA/datasets/pipelines/loading.py:1243`) |
+| **CoIn3D** (CVPR 2026, 카메라 구성 일반화) | ego (에이전트: 원점이 뒷차축 중심을 지면에 내린 점, 보충자료) | 지면 기준 표현(ground depth 등)을 써요. | 제목·초록만 확인 |
+| DG-BEV (CVPR 2023), UniDrive (ICLR 2025), Wang 외 (CVPR 2020) | 각각 ego, 미기재, 데이터셋별 원래 좌표계 (에이전트 보고) | 높이 정렬은 따로 없어요. | 미확인 |
+
+**정리**
+
+- 좌표계를 명시적으로 다루는 연구는 모두 원점을 지면 쪽으로 맞춰요(ST3D, Zheng 외, PD-BEV, CoIn3D). 원래 LiDAR 좌표계를 그대로 쓰는 건 UDGA와 PCCR 공식 LiDAR 계열 모델이에요.
+- nuScenes 방식 지표(PCCR, 123D)는 z를 보지 않아요. 그래서 PCCR에서 LiDAR 좌표계 모델이 무너진 건 평가 문제가 아니라, 모델이 샘플링하는 높이 때문이에요.
 
 ## 포팅할 때 주의할 점
 

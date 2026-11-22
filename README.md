@@ -12,7 +12,7 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 | BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | **완료** (2026-11-22): R1 30.4 ([results.md](docs/results.md)) |
 | BEVDepth + PD-BEV | Forward | `bevdepth/` | 준비 중 |
 | BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 mmdet3d 1.0 기준으로 재구현) | 준비 중 |
-| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, LiDAR 좌표계) | 포팅 중 |
+| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | 포팅 완료, R1 학습 준비 (2026-11-22) |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
 | + UniDrive, + CoIn3D | — | — | 이번 범위에서 제외 |
 
@@ -38,6 +38,11 @@ Gen2E/
 │   ├── bevdepth_train.sh    bevdepth/ 설정을 R1에서 학습 (GPU 2장)
 │   ├── bevdepth_test_rigs.sh 14개 리그 test 평가 + 7-class mAP 집계
 │   ├── check_bevdepth_upstream.py  vanilla 경로가 원본 BEVDet과 같은지 확인
+│   ├── bevformer_train.sh   bevformer/ 설정을 R1에서 학습 (GPU 2장)
+│   ├── bevformer_test_rigs.sh 14개 리그 test 평가 + 7-class mAP 집계
+│   ├── download_bevformer_pretrained.sh  BEVFormer-S 백본 ImageNet 가중치 (sha256 확인)
+│   ├── check_bevformer_pccr.py  BEVFormer PCCR 어댑터 확인 (박스 변환, GT 평가, 투영)
+│   ├── check_pccr_eval_copy.py  BEVFormer의 PCCR 평가 코드가 PCCR 원본과 같은지 확인
 │   ├── setup_env_bevdepth.sh
 │   └── setup_env_bevformer.sh
 └── data/pccr -> /data2/PCCR (심볼릭 링크, git 제외)
@@ -72,6 +77,16 @@ bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/bevdepth-r50-pccr/R1 0,1
 
 # vanilla 경로가 원본 BEVDet @2ae6a02와 같은지 확인
 python tools/check_bevdepth_upstream.py /path/to/BEVDet   # 2ae6a02 체크아웃
+
+# 5) BEVFormer-S: 가중치 받기 → R1 학습(GPU 2장) → 14개 리그 평가 (gen2e-bevformer env)
+bash tools/download_bevformer_pretrained.sh
+bash tools/bevformer_train.sh projects/configs/gen2e/bevformer_small_pccr.py 2,3
+bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3
+
+# BEVFormer PCCR 어댑터 확인
+python3 tools/check_pccr_eval_copy.py
+python -I tools/check_bevformer_pccr.py boxes R6 test
+python -I tools/check_bevformer_pccr.py eval-gt R6 test
 ```
 
 ## 평가 프로토콜 요약

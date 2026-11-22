@@ -88,6 +88,29 @@ PD-BEV는 BEVDet 원본 16개 파일을 직접 고쳤어요(부록 A). vanilla B
 | 배치 | MSDA의 `im2col_step=64` 때문에 `bs × num_cams ≤ 64`(또는 64의 배수)여야 해요. GPU당 1샘플로 카메라 10대까지는 괜찮아요. 전체 배치 8이 필요하면 `GradientCumulativeOptimizerHook`을 써요. |
 | 기타 버그 | TSA `value[:bs]`, SCA batch-0 mask 버그는 `samples_per_gpu > 1`일 때만 문제가 돼요. |
 
+**구현 (2026-11-22).** 커밋은 `99f5fd0`~`7df3601`이에요. 변경마다 커밋을 하나씩 만들었어요.
+
+| 파일 | 내용 |
+|---|---|
+| `bevformer/projects/mmdet3d_plugin/datasets/pccr_eval.py` | PCCR BEVDet 어댑터의 클래스 이름·속성·nuScenes devkit 평가를 **그대로 복사**했어요(소스 구간에서 생성). BEVDepth 행과 같은 평가 코드예요. `tools/check_pccr_eval_copy.py`가 AST로 비교해요. |
+| `bevformer/projects/mmdet3d_plugin/datasets/pccr_dataset.py` | `PCCRBEVFormerDataset`이에요. ① 박스를 1.x 형식에서 0.17.1 형식(`[w, l, h]`, `-yaw - π/2`)으로 바꿔요. ② 기준 좌표계를 고를 수 있어요(`ref2ego_translation`): 설정은 R1 LiDAR 장착 위치를 모든 차량에 쓰는 차량 고정 좌표계이고, `lidar2img`는 카메라의 sensor2ego로 만들어요. ③ PCCR info에 없는 `next`·`frame_idx`·`can_bus`를 채워요. CAN bus는 0이에요. ④ 속도 없는 0.17.1 박스용 `_format_bbox`를 넣었어요. |
+| `spatial_cross_attention.py` | 카메라 수를 입력(`key.shape[0]`)에서 읽어요. |
+| `transformer.py` | `use_cams_embeds=False`이면 `cams_embeds`를 아예 만들지 않아요(DDP 미사용 파라미터 방지). |
+| `bevformer.py` | `queue_length=1`이면 이전 프레임 BEV 계산을 건너뛰어요. |
+| `tools/test.py` | `--eval-options jsonfile_prefix`를 덮어쓰지 않아요(리그별 결과 디렉터리용). |
+| `projects/configs/gen2e/bevformer_small_pccr.py` | `bevformer_small.py` 복사본이고, 바꾼 곳마다 `Gen2E` 주석이 있어요. |
+| `tools/bevformer_train.sh`, `tools/bevformer_test_rigs.sh`, `tools/download_bevformer_pretrained.sh` | 학습, 14개 리그 평가, ImageNet R101 가중치 받기(sha256 확인)예요. |
+
+**확인한 것** (`tools/check_bevformer_pccr.py`)
+
+- **박스 변환 (`boxes`):** nuScenes devkit이 주석 테이블에서 만든 박스와 꼭짓점 단위로 비교했어요. R1·R4·R6·R9에서 오차는 최대 8e-6 m예요.
+  - devkit 박스는 pitch·roll을 빼고 비교했어요. mmdet3d 박스와 nuScenes 지표 모두 yaw만 쓰기 때문이에요.
+  - PCCR에는 크게 기운 주석도 있어요(쓰러진 보행자는 pitch 73~86°).
+- **출력 경로 (`eval-gt`):** GT를 예측으로 넣었더니 R1 mini, R6·R9·R1-c10 test 모두 mAP 1.0, mATE·mASE 0이 나왔어요. mAOE는 ≤ 0.002 rad예요. 기운 주석과 차량 pitch에서 생기는 수치 오차예요.
+- **카메라 투영 (`render`):** R1(카메라 8대)과 R6(카메라 9대)에서 학습 파이프라인을 거친 이미지에 GT 박스가 정확히 맞아요.
+- **좌표계 동등성:** etron 리그(R1, R3)에서는 새 좌표계가 원래 LiDAR 좌표계와 같아요(박스 차이 0, 투영 행렬 차이 ≤ 2e-5). R6에서는 박스가 (0.10, 0, 2.94) m 옮겨져요. LiDAR 장착 위치 차이와 같은 값이에요.
+- **보정값 일관성:** sensor2lidar와 (lidar2ego⁻¹ · sensor2ego)가 R1·R4·R6·R9에서 기계 정밀도로 같아요.
+
 ---
 
 ## 1. BEVDepth (vanilla) — 규모 M

@@ -45,8 +45,17 @@
   - 부수적으로, PETR·BEVFusion·Fast-BEV 어댑터는 평가 박스의 w/l이 뒤바뀌고 yaw가 반전돼요(ASE 0.73, AOE ≈ π/2). mAP에는 영향이 없어요.
 - **결정:** BEVFormer-S는 LiDAR 좌표계(A)로 학습해요([decisions.md](decisions.md)).
 
+- **BEVFormer-S 설정 결정 (사용자):** 배치 8(누적 4회)·lr 2e-4, 1280×720, ImageNet 초기화, CAN bus 끔이에요.
+- **좌표계 결정 변경:** 사용자가 "LiDAR로 하면 차종마다 달라져서 ego 기준으로"라고 했어요. 그래서 원점을 R1 LiDAR 장착 위치로 고정한 차량 고정 좌표계로 바꿨어요([decisions.md](decisions.md)).
+- **다른 cross-domain 연구 조사 (사용자 요청, "123d" 포함):** [pccr_dataset.md](pccr_dataset.md) "다른 cross-domain 연구의 좌표계"에 정리했어요.
+  - 123D는 "123D: Unifying Multi-Modal Autonomous Driving Data at Scale"(arXiv 2605.08084)예요. §4.3에서 PETR과 BEVFormer-S로 cross-dataset 검출을 해요.
+  - 좌표계를 명시적으로 다루는 연구(ST3D, Zheng 외 CoRL'23, PD-BEV)는 원점을 지면 쪽으로 맞춰요.
+- **BEVFormer-S 포팅 (0-C, 4장):** 커밋 `99f5fd0`~`7df3601`이에요. 구현과 확인 결과는 [porting_plan.md](porting_plan.md) 0-C의 "구현" 단락에 있어요.
+  - gen2e-bevformer env의 Pillow를 9.5.0으로 고정했어요. detectron2 0.6과 Pillow 10이 충돌해서 플러그인 import가 실패했어요.
+  - 스모크 테스트(R1 mini, 1 epoch)에서 학습은 0.72 s/iter, GPU당 11.5 GB로 돌았어요. loss는 23.0에서 18.8로 내려갔어요.
+
 ## 다음 할 일
 
-1. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S를 R1에서 학습해요(4장). 학습 설정(배치·lr, 해상도, 사전학습 가중치)은 사용자 확인이 필요해요.
+1. BEVFormer-S R1 학습이 끝나면(약 10시간) 14개 리그를 평가해요: `bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3`
 2. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). 기존 BEVFormer-S 코드, PD-BEV head 구성, 공식 코드 버그 처리가 남았어요.
 3. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.
