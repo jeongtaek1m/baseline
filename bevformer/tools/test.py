@@ -244,8 +244,10 @@ def main():
             assert False
             #mmcv.dump(outputs['bbox_results'], args.out)
         kwargs = {} if args.eval_options is None else args.eval_options
-        kwargs['jsonfile_prefix'] = osp.join('test', args.config.split(
-            '/')[-1].split('.')[-2], time.ctime().replace(' ', '_').replace(':', '_'))
+        # Gen2E: keep a jsonfile_prefix given with --eval-options (tools/bevformer_test_rigs.sh
+        # writes one result directory per rig). Upstream always replaced it with this path.
+        kwargs.setdefault('jsonfile_prefix', osp.join('test', args.config.split(
+            '/')[-1].split('.')[-2], time.ctime().replace(' ', '_').replace(':', '_')))
         if args.format_only:
             dataset.format_results(outputs, **kwargs)
 
