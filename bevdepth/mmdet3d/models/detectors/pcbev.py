@@ -53,8 +53,9 @@ class PCBEV_DG(BEVDet):
         outs = self.pts_bbox_head(pts_feats)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
-        loss_bev = self.pts_bbox_head.bev_loss(bev_heatmap)
-        losses.update({'loss_bev_heatmap_source': loss_bev})
+        # Gen2E (decision 2026-11-22): no car-only BEV auxiliary loss. It is not in the paper
+        # (eq. 8) and was inactive upstream (PDBEV-2 eq(0) mask, PDBEV-17 ReLU floor). The head is
+        # the 7-class CenterHeadNoVel of vanilla BEVDepth, which has no bev_loss.
 
 
         return losses
@@ -92,7 +93,8 @@ class PCBEV_DG(BEVDet):
         PV_features_aug, unused_loss_aug = self.img_view_transformer.get_PV_feats_aug(bev_feats_source, [intrins, post_rots, post_trans, bda, intri_actually], **kwargs)
         loss_pv_heatmaps, loss_pv_regess, pv_heatmaps= self.bev_img_aux(PV_features, mlp_input,'img', depth_flag='real', **kwargs)
         loss_pv_heatmaps_aug, loss_pv_regess_aug, pv_heatmaps_aug = self.bev_img_aux(PV_features_aug, mlp_input_aug,'img_aug', depth_flag='real', **kwargs)
-        bev_heatmaps, bev_unused_loss = self.bev_img_aux.get_heatmaps(BEV_features_source)
+        # Gen2E: the BEV heatmaps only fed the dropped BEV auxiliary loss.
+        bev_heatmaps, bev_unused_loss = None, 0.0
         # consistency
         loss_dict.update({'loss_heatmaps_source': loss_heatmaps_source})
         loss_dict.update({'loss_regess_source': loss_regess_source})
@@ -144,7 +146,7 @@ class PCBEV_DG(BEVDet):
         losses = dict(loss_depth_source=loss_depth)
         losses.update(loss_dict)
         losses_pts = self.forward_pts_train(img_feats, gt_bboxes_3d,
-                                            gt_labels_3d, img_metas, bev_heatmap=bev_heatmaps,
+                                            gt_labels_3d, img_metas,
                                             pseudo_flag=False, gt_bboxes_ignore=None)
         losses.update(losses_pts)
 
