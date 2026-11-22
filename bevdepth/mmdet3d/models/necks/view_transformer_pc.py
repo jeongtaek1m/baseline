@@ -309,9 +309,13 @@ class LSSViewTransformer_pc(LSSViewTransformer):
         return bev_feat, depth_real, depth_vitural
 
 
-    def get_PV_feats(self, bev_feat, index=None):
+    def get_PV_feats(self, bev_feat, index=None, bev_voxel=None):
         coor_revise = self.get_bev_coor(self.coor)
-        bev_voxel, unused_loss = self.BEV_aux(bev_feat)
+        # Gen2E (PDBEV-11): reuse an IFV computed once per step (BEV_aux ran 3 times upstream).
+        if bev_voxel is None:
+            bev_voxel, unused_loss = self.BEV_aux(bev_feat)
+        else:
+            unused_loss = 0.0
         Frutums_feature = self.get_feature_Voxel2Frutums(bev_voxel, coor_revise, index)
         PV_feats = self.nerf(Frutums_feature)
         return PV_feats, unused_loss
@@ -338,13 +342,16 @@ class LSSViewTransformer_pc(LSSViewTransformer):
                           3).matmul(points.unsqueeze(-1)).squeeze(-1)
         return points
 
-    def get_PV_feats_aug(self, bev_feat, input, **kwargs):
+    def get_PV_feats_aug(self, bev_feat, input, bev_voxel=None, **kwargs):
         intrins, post_rots, post_trans, bda, intri_actually = input
         rot_augs = kwargs['bev_aug']['rot_augs']
         tran_augs = kwargs['bev_aug']['tran_augs']
         coor = self.get_lidar_coor_aug(rot_augs, tran_augs, intrins, post_rots, post_trans, bda, intri_actually)
         coor_revise = self.get_bev_coor(coor)
-        bev_voxel, unused_loss = self.BEV_aux(bev_feat)
+        if bev_voxel is None:  # Gen2E (PDBEV-11)
+            bev_voxel, unused_loss = self.BEV_aux(bev_feat)
+        else:
+            unused_loss = 0.0
         # print('bev_voxel', bev_voxel.shape)
         Frutums_feature = self.get_feature_Voxel2Frutums(bev_voxel, coor_revise, index=None)
         # print('Frutums_feature', Frutums_feature.shape)

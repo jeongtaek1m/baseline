@@ -88,9 +88,12 @@ class PCBEV_DG(BEVDet):
         # source 2d data
         loss_heatmaps_source, loss_regess_source, heatmaps_source = self.img_aux(img_feature, **kwargs)
         # source bev data
-        BEV_features_source, unused_loss_bev_source = self.img_view_transformer.get_BEV_feats_from_voxel(bev_feats_source)
-        PV_features, unused_loss = self.img_view_transformer.get_PV_feats(bev_feats_source)
-        PV_features_aug, unused_loss_aug = self.img_view_transformer.get_PV_feats_aug(bev_feats_source, [intrins, post_rots, post_trans, bda, intri_actually], **kwargs)
+        # Gen2E (PDBEV-11): compute the IFV once and render the real and virtual views from it.
+        # Upstream ran BEV_aux three times on the same BEV (also for the BEV heatmaps that only fed
+        # the dropped BEV auxiliary loss), updating its BatchNorm statistics three times per step.
+        bev_voxel, unused_loss_bev_source = self.img_view_transformer.BEV_aux(bev_feats_source)
+        PV_features, unused_loss = self.img_view_transformer.get_PV_feats(bev_feats_source, bev_voxel=bev_voxel)
+        PV_features_aug, unused_loss_aug = self.img_view_transformer.get_PV_feats_aug(bev_feats_source, [intrins, post_rots, post_trans, bda, intri_actually], bev_voxel=bev_voxel, **kwargs)
         loss_pv_heatmaps, loss_pv_regess, pv_heatmaps= self.bev_img_aux(PV_features, mlp_input,'img', depth_flag='real', **kwargs)
         loss_pv_heatmaps_aug, loss_pv_regess_aug, pv_heatmaps_aug = self.bev_img_aux(PV_features_aug, mlp_input_aug,'img_aug', depth_flag='real', **kwargs)
         # Gen2E: the BEV heatmaps only fed the dropped BEV auxiliary loss.
