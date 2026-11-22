@@ -119,14 +119,27 @@ class PCBEV_DG(BEVDet):
                     rescale=False,
                     **kwargs):
         """Test function without augmentaiton."""
-        img_feats, _, _, _, _= self.extract_feat(
-            points, img=img, img_metas=img_metas, **kwargs)
+        # Gen2E (PDBEV-15): upstream called extract_feat -> extract_img_feat with the wrong
+        # signature and needed training-only inputs (bev_aug, 2D targets), so it could not run;
+        # the official evaluation used a separate BEVDepth_DG config. Inference only needs the
+        # base path (the auxiliary heads are training-only), which is what BEVDepth_DG computes.
+        img_feats = self.extract_img_feat_test(img)
         bbox_list = [dict() for _ in range(len(img_metas))]
         bbox_pts = self.simple_test_pts(img_feats, img_metas, rescale=rescale)
         for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
             result_dict['pts_bbox'] = pts_bbox
             result_dict['img_metas'] = img_metas
         return bbox_list  # img_metas #
+
+    def extract_img_feat_test(self, img):
+        """Gen2E (PDBEV-15): image -> BEV features of the base BEVDepth path (= BEVDepth_DG)."""
+        imgs, rots, trans, intrins, post_rots, post_trans, bda, intri_actually = img
+        mlp_input = self.img_view_transformer.get_mlp_input(
+            rots, trans, intrins, post_rots, post_trans, bda, intri_actually)
+        img_feature = self.image_encoder(imgs)
+        x, _, _ = self.img_view_transformer(
+            [img_feature, rots, trans, intrins, post_rots, post_trans, bda, mlp_input, intri_actually])
+        return [self.bev_encoder(x)]
 
     def forward_train(self,
                       points=None,
