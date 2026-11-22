@@ -96,15 +96,35 @@ def cmd_summarize(args):
             print(f'skip {f}: missing classes {missing}', file=sys.stderr)
             continue
         map9 = map_over(aps, [c for c in CLASSES9 if c in aps])
-        rows.append((rig_from_path(f), map_over(aps, CLASSES7), map9, 100.0 * m.get('nd_score', float('nan')), f))
+        rows.append((rig_from_path(f), map_over(aps, CLASSES7), map9,
+                     100.0 * m.get('nd_score', float('nan')), f, checkpoint_of(f)))
     order = {r: i for i, r in enumerate(RIGS)}
     rows.sort(key=lambda r: order.get(r[0], 99))
-    print(f"{'rig':8s} {'mAP7':>6s} {'mAP9':>6s} {'NDS':>6s}  file")
-    for rig, m7, m9, nds, f in rows:
-        print(f'{rig:8s} {m7:6.1f} {m9:6.1f} {nds:6.1f}  {f}')
+    print(f"{'rig':8s} {'mAP7':>6s} {'mAP9':>6s} {'NDS':>6s}  {'checkpoint':16s} file")
+    for rig, m7, m9, nds, f, ckpt in rows:
+        print(f'{rig:8s} {m7:6.1f} {m9:6.1f} {nds:6.1f}  {os.path.basename(ckpt):16s} {f}')
     if rows:
-        print('table row (mAP7):', ' & '.join(f'{r[1]:.1f}' for r in rows))
+        # one column per rig in table order; a rig without a result is '--' so columns never shift
+        by_rig = {r[0]: r[1] for r in rows}
+        print('table row (mAP7):', ' & '.join(f'{by_rig[r]:.1f}' if r in by_rig else '--' for r in RIGS))
+        missing = [r for r in RIGS if r not in by_rig]
+        if missing:
+            print(f'warning: no result for {" ".join(missing)}', file=sys.stderr)
+        ckpts = sorted({r[5] for r in rows})
+        if len(ckpts) > 1:
+            print(f'warning: results come from different checkpoints: {ckpts}', file=sys.stderr)
     return 0
+
+
+def checkpoint_of(path):
+    """Checkpoint recorded by tools/*_test_rigs.sh in the test_on_<RIG>_test directory."""
+    d = os.path.dirname(os.path.abspath(path))
+    while d != os.path.dirname(d):
+        if re.match(r'test_on_.*_test$', os.path.basename(d)):
+            f = os.path.join(d, 'checkpoint.txt')
+            return open(f).read().strip() if os.path.exists(f) else 'unknown'
+        d = os.path.dirname(d)
+    return 'unknown'
 
 
 def main():

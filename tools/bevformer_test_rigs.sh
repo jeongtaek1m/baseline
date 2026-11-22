@@ -16,8 +16,12 @@ if [ $# -lt 2 ]; then
 fi
 WORK_DIR=$(realpath "$1")
 GPU_IDS=$2
-PORT=${3:-29540}
-shift $(( $# >= 3 ? 3 : 2 ))
+shift 2
+PORT=29540
+if [[ ${1:-} =~ ^[0-9]+$ ]]; then  # optional PORT, then rig names
+    PORT=$1
+    shift
+fi
 RIGS=("$@")
 if [ ${#RIGS[@]} -eq 0 ]; then
     RIGS=(R1 R1-c6 R1-c10 R1-f R1-r R1-t R2 R3 R4 R5 R6 R7 R8 R9)
@@ -42,6 +46,7 @@ for RIG in "${RIGS[@]}"; do
         bash tools/dist_test.sh "$CONFIG" "$CKPT" "$NGPU" \
         --cfg-options data.test.data_root="$ROOT" data.test.ann_file="${ROOT}${RIG}_infos_test.pkl" \
         --eval-options jsonfile_prefix="$OUT" 2>&1 | tee "$OUT.log"
+    realpath "$CKPT" > "$OUT/checkpoint.txt"  # read by pccr_metric.py summarize
 done
 
 python3 "$REPO/tools/pccr_metric.py" summarize "$WORK_DIR/test_on_*_test/**/metrics_summary.json"

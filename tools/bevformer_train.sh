@@ -16,8 +16,12 @@ if [ $# -lt 2 ]; then
 fi
 CONFIG=$1
 GPU_IDS=$2
-PORT=${3:-29520}
-shift $(( $# >= 3 ? 3 : 2 ))
+shift 2
+PORT=29520
+if [[ ${1:-} =~ ^[0-9]+$ ]]; then  # optional PORT, then extra args for tools/train.py
+    PORT=$1
+    shift
+fi
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO/bevformer"
