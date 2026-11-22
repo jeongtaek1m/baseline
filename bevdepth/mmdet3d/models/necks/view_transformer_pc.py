@@ -372,7 +372,8 @@ class LSSViewTransformer_pc(LSSViewTransformer):
             coor_revise = coor_revise
         else:
             coor_revise = coor_revise[index]
-        B, C, Height, X, Y = bev.shape
+        # Gen2E (PDBEV-1): the BEV volume is (B, C, Z, Y, X); bev_pool_v2 writes rank y * X + x.
+        B, C, Height, Y, X = bev.shape
         B, N, D, H, W, XYZ = coor_revise.shape
         temp_feature = bev.new_zeros(B, C, N, D, H, W)
         temp_feature = temp_feature.reshape(B, C, -1)
@@ -386,7 +387,7 @@ class LSSViewTransformer_pc(LSSViewTransformer):
             Y_index = coor_revise[b_index, :, :, :, :, 1].reshape(-1)
             Z_index = coor_revise[b_index, :, :, :, :, 2].reshape(-1)
             mask = (X_index >= 0) & (X_index < self.grid_size[0]) & (Y_index >= 0) & (Y_index < self.grid_size[1]) & (Z_index >= 0) & (Z_index < self.BEV_aux_cfg.height_num)
-            temp_feature[b_index, :, mask] = bev[b_index, :, Z_index[mask], X_index[mask], Y_index[mask]]
+            temp_feature[b_index, :, mask] = bev[b_index, :, Z_index[mask], Y_index[mask], X_index[mask]]
         temp_feature = temp_feature.reshape(B, C, N, D, H, W)
         temp_feature = temp_feature.transpose(1, 2).reshape(B*N, C, D, H, W)
 
