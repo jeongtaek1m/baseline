@@ -53,6 +53,8 @@
 - **BEVFormer-S 포팅 (0-C, 4장):** 커밋 `99f5fd0`~`7df3601`이에요. 구현과 확인 결과는 [porting_plan.md](porting_plan.md) 0-C의 "구현" 단락에 있어요.
   - gen2e-bevformer env의 Pillow를 9.5.0으로 고정했어요. detectron2 0.6과 Pillow 10이 충돌해서 플러그인 import가 실패했어요.
   - 스모크 테스트(R1 mini, 1 epoch)에서 학습은 0.72 s/iter, GPU당 11.5 GB로 돌았어요. loss는 23.0에서 18.8로 내려갔어요.
+  - 스모크 체크포인트로 R5(카메라 4대)와 R1-c10(10대) test 평가 경로도 확인했어요.
+- **BEVFormer-S R1 학습을 시작했어요** (20:42, GPU 2·3). 0.77 s/iter이고 약 10시간 걸려요. 출력은 `bevformer/work_dirs/bevformer_small_pccr/R1/`, 로그는 `logs/train_bevformer_small_pccr_R1.log`예요.
 
 ## 다음 할 일
 
