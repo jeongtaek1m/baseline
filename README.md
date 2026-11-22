@@ -9,7 +9,7 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 
 | 표의 행 | View transform | Base 코드 | 상태 |
 |---|---|---|---|
-| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | 준비 중 |
+| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | R1 학습 중 (2026-11-22, GPU 0·1) |
 | BEVDepth + PD-BEV | Forward | `bevdepth/` | 준비 중 |
 | BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 mmdet3d 1.0 기준으로 재구현) | 준비 중 |
 | BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임) | 준비 중 |

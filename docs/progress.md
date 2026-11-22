@@ -29,11 +29,17 @@
   - ego 원점은 4개 차종 모두 지면이에요. 그래서 ego 좌표계를 쓰는 BEVDepth 계열은 고칠 게 없어요.
   - LiDAR 좌표계는 리그마다 지면 높이가 1.50~4.80 m로 달라요. BEVFormer-S에서 어느 좌표계를 쓸지 새 결정 항목으로 올렸어요.
   - PCCR의 PETR·BEVFusion 로더는 z를 바닥으로 읽어서 학습 박스가 h/2 떠 있어요. † 지표에는 영향이 없어요.
+- **vanilla BEVDepth 포팅 (포팅 계획 0-A, 0-B, 1장).** 자세한 내용은 [porting_plan.md](porting_plan.md)의 "구현" 단락에 있어요. 커밋은 `ea224a7`~`55b52cc`예요.
+  - PCCR 어댑터를 그대로 옮기고, 원본 BEVDet 클래스 4개를 바이트 단위로 복원했어요. `tools/check_bevdepth_upstream.py`로 확인해요.
+  - `cams=None` 처리(`PrepareImageInputsPCCR`)와 속도 없는 head(`CenterHeadNoVel`)를 추가했어요.
+  - PD-BEV 도구의 디버그 코드를 정리했어요(anomaly detection, `/mnt/cfs` 덤프).
+  - 설정은 `bevdepth/configs/gen2e/bevdepth-r50-pccr.py`예요. PCCR BEVDet 설정(dev3.0)을 dev2.0 파이프라인으로 옮기고, 업스트림 BEVDepth 요소를 더하고, 7개 클래스로 바꿨어요.
+  - 스모크 테스트(R1 mini, 1 epoch)에서 학습과 평가가 끝까지 돌았어요. depth 라벨 정렬도 이미지로 확인했어요.
+- **vanilla BEVDepth R1 학습을 시작했어요.** GPU 0·1을 쓰고, 출력은 `bevdepth/work_dirs/bevdepth-r50-pccr/R1/`, 로그는 `logs/train_bevdepth-r50-pccr_R1.log`예요. epoch당 473 iter, 24 epoch이에요.
 
 ## 다음 할 일
 
-1. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). vanilla BEVDepth는 막힌 결정이 없어요.
-2. `bevdepth/`에 PCCR 데이터셋 어댑터와 `cams=None` 처리를 넣어요(포팅 계획 0-A).
-3. vanilla BEVDepth용 원본 클래스를 복원하고 설정을 만들어요(0-B, 1장). 그다음 R1 학습(GPU 2장)과 14개 리그 평가를 해요.
-4. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S 재현을 확인해요(4장).
-5. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.
+1. vanilla BEVDepth 학습이 끝나면 14개 리그를 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/bevdepth-r50-pccr/R1 0,1`
+2. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). BEVFormer-S 좌표계, 기존 BEVFormer-S 코드, PD-BEV head 구성, 공식 코드 버그 처리가 남았어요.
+3. `bevformer/`에 PCCR을 통합하고(0-C), BEVFormer-S 재현을 확인해요(4장).
+4. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.
