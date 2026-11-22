@@ -14,7 +14,20 @@
 
 ### 0-A. `bevdepth/`: PCCR 데이터셋 통합 (모든 BEVDepth 계열 행에 필요)
 
-| 할 일 | 메모 |
+**구현 (2026-11-22).** 새 파일만 추가했고, 설정의 `custom_imports`로 불러와요. PD-BEV의 `__init__.py`는 건드리지 않았어요.
+
+| 파일 | 내용 |
+|---|---|
+| `mmdet3d/datasets/pccr_dataset.py` | PCCR `PCCRDataset`을 그대로 복사했어요(커밋 `ea224a7`). 그 위에 `evaluate()`만 덧붙였어요. PD-BEV가 `NuScenesDataset.evaluate`에 쓰이지 않는 위치 인자 `save_path`를 추가해서 mmdet `EvalHook`이 실패하기 때문이에요. |
+| `mmdet3d/datasets/pipelines/loading_pccr.py` | `PrepareImageInputsPCCR`(아래 0-B의 원본 클래스를 상속)예요. `cams=None`이면 샘플의 카메라를 모두 `info['cams']` 순서대로 써요. 학습할 때도 카메라를 버리지 않아요. |
+| `mmdet3d/models/dense_heads/centerpoint_head_pccr.py` | `CenterHeadNoVel`(원본 CenterHead 상속)이에요. PCCR 설정은 속도 head가 없어요. dev2.0 CenterHead의 loss는 `'vel'`을 하드코딩해서 KeyError가 나요. 그래서 빈 `'vel'`을 넘겨 속도 항을 0으로 만들어요. |
+| `tools/train.py`, `tools/test.py` | PD-BEV가 남긴 디버그 코드를 정리했어요. `set_detect_anomaly(True)`는 `GEN2E_DETECT_ANOMALY=1`일 때만 켜져요. `/mnt/cfs`로 고정된 결과 덤프는 지웠어요. |
+
+- **ego 기준 카메라:** 파이프라인은 `ego_cam=None`(카메라마다 자기 ego pose)을 써요. PCCR은 한 샘플 안의 모든 카메라 ego pose가 LiDAR ego pose와 정확히 같아요(R1·R5·R6에서 차이 0 확인). 그래서 업스트림 기본값 `CAM_FRONT`와 결과가 같고, 대부분의 리그에 `CAM_FRONT`가 없어도 동작해요. 결과 변환은 PCCR 어댑터의 `ego_cam='auto'`가 맡아요.
+- **라벨 순서:** pkl에 저장된 `ann_infos` 라벨은 PCCR 9-class 순서가 아니에요. `PCCRDataset._normalize_bevdet_ann_infos`가 설정의 `classes`(7개) 기준으로 다시 매기고, traffic 2종은 -1로 바꿔요. 학습할 때 `ObjectNameFilter`가 그 박스를 빼요. R1의 모든 split에서 `valid_flag`가 전부 True라서 이 재매김은 항상 실행돼요.
+- **PCCR 설정은 dev3.0 문법이에요.** PCCR `bevdet-r50-pccr.py`는 `LoadAnnotations` + `BEVAug`(BEVDet dev3.0) 파이프라인이에요. 이 트리(dev2.0)에서는 `LoadAnnotationsBEVDepth` 하나로 옮겼어요. 증강 범위와 값은 같아요.
+
+| 할 일 (원래 계획) | 메모 |
 |---|---|
 | PCCR 어댑터 이식 | `third_party/pccr/models/BEVDet/pccr_dataset.py`의 `PCCRDataset`(NuScenesDataset 상속)를 `bevdepth/mmdet3d/datasets/`에 넣고 등록해요. PD-BEV 트리(dev2.0 @2ae6a02)의 `NuScenesDataset`에도 `ego_cam`과 `img_info_prototype` 인자가 있어서 API는 맞아요. 다만 PD-BEV가 `nuscenes_dataset.py`를 37줄 고쳤으니 호환성을 확인해야 해요. |
 | `cams=None` 처리 | PCCR 공식 설정은 `data_config.cams=None`, `Ncams=None`이에요. 그런데 이를 처리하는 `PrepareImageInputs` 수정본은 **PCCR 레포에 없어요.** 업스트림 `choose_cams()`는 `len(None)`에서 실패해요. info에 있는 카메라 목록을 순서대로 쓰도록 구현하고, 이 부분이 † 수치와 차이가 날 수 있는 지점이라는 걸 기록해 둬요. |
@@ -39,6 +52,25 @@ PD-BEV는 BEVDet 원본 16개 파일을 직접 고쳤어요(부록 A). vanilla B
 
 - **단일 프레임 BEVDepth detector:** dev2.0에서 업스트림 `BEVDepth4D`를 인접 프레임 없이 쓸 수 있는지 먼저 확인해요. 안 되면 업스트림 `BEVDet`에 DepthNet 손실만 붙인 얇은 클래스를 만들어요.
 - **PD-BEV의 `BEVDepth_DG`는 vanilla로 쓰면 안 돼요.** PD-BEV의 8원소 입력 형식에서만 동작해요.
+
+**구현 (2026-11-22, 커밋 `db9af31`)**
+
+- **복원한 클래스:** `PointToMultiViewDepth`, `PrepareImageInputs`, `LoadAnnotationsBEVDepth`(`loading_upstream.py`)와 `CenterHead`(`centerpoint_head_upstream.py`)예요.
+  - 업스트림 원본을 그대로 복사했고, 등록 이름만 `<이름>Upstream`으로 바꿨어요.
+  - `python tools/check_bevdepth_upstream.py <BEVDet @2ae6a02 체크아웃>`으로 확인해요. 이 도구는 복원본이 업스트림과 바이트 단위로 같은지 봐요. vanilla 경로에서 PD-BEV 파일을 그대로 쓰는 나머지 클래스도 업스트림과 같은지 봐요.
+- **알려진 예외 2개:** 검토 결과 결과에 영향이 없어요.
+  - `BEVDet.simple_test`가 결과에 `img_metas`를 덧붙여요. 평가할 때 `form_meta`가 떼어 내요.
+  - `DepthNet`에 `mlp_channels=27` 기본 인자와 no-op `squeeze(-1)`가 추가됐어요.
+- **detector:** 업스트림 `BEVDepth4D`를 `num_adj=0`으로 써요. 새 클래스는 없어요.
+  - `BEVDet4D.extract_img_feat`는 `num_frame=1`이면 키 프레임 하나만 처리해요. DepthNet용 `mlp_input`을 만들고, depth 손실은 `BEVDepth4D.forward_train`이 계산해요.
+  - 4D 정렬용 `pre_process`는 넣지 않았어요. 그래서 BEV 인코더는 PCCR BEVDet과 같아요.
+- **업스트림의 초기화 특성을 그대로 둬요:** heatmap bias −2.19 초기화가 적용되지 않아요.
+  - 원인은 `CenterHead.task_heads`가 일반 `nn.ModuleList`라는 점이에요. mmcv 1.5.3의 `BaseModule.init_weights`는 `init_weights`가 있는 자식에게만 재귀해서 `SeparateHead.init_weights`가 불리지 않아요.
+  - 그래서 학습 초기 `loss_heatmap`이 2000 안팎이에요(bias 0, p=0.5일 때의 값).
+  - 같은 mmcv를 쓰는 원본 BEVDet과 PCCR BEVDet†도 똑같아서, vanilla 기준선은 고치지 않아요.
+- **스모크 테스트 (R1 mini, 1 epoch, GPU 2장):** 학습 → checkpoint → EMA checkpoint → val 평가(PCCRDataset)가 끝까지 돌아요.
+  - 0.63 s/iter, GPU당 8.8 GB예요. `loss_vel`=0이에요.
+  - depth 라벨을 증강된 이미지에 겹쳐 보면 정렬이 맞아요.
 
 ### 0-C. `bevformer/`: PCCR 통합 (BEVFormer-S 계열 행에 필요)
 

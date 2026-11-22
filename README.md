@@ -35,6 +35,9 @@ Gen2E/
 │   ├── pccr_rig_summary.py  리그 정의 요약표
 │   ├── pccr_metric.py       표 지표(7-class mAP) 재현과 집계
 │   ├── pccr_box_z_check.py  GT 박스 z 확인 (좌표계, 지면 접촉, 이미지 투영)
+│   ├── bevdepth_train.sh    bevdepth/ 설정을 R1에서 학습 (GPU 2장)
+│   ├── bevdepth_test_rigs.sh 14개 리그 test 평가 + 7-class mAP 집계
+│   ├── check_bevdepth_upstream.py  vanilla 경로가 원본 BEVDet과 같은지 확인
 │   ├── setup_env_bevdepth.sh
 │   └── setup_env_bevformer.sh
 └── data/pccr -> /data2/PCCR (심볼릭 링크, git 제외)
@@ -62,6 +65,13 @@ bash tools/setup_env_bevformer.sh     # gen2e-bevformer
 
 # 3) 표 지표가 7-class mAP인지 직접 확인
 python3 tools/pccr_metric.py verify-dagger
+
+# 4) vanilla BEVDepth: R1 학습(GPU 2장) → 14개 리그 test 평가 + 7-class mAP 집계 (gen2e-bevdepth env)
+bash tools/bevdepth_train.sh configs/gen2e/bevdepth-r50-pccr.py 0,1
+bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/bevdepth-r50-pccr/R1 0,1
+
+# vanilla 경로가 원본 BEVDet @2ae6a02와 같은지 확인
+python tools/check_bevdepth_upstream.py /path/to/BEVDet   # 2ae6a02 체크아웃
 ```
 
 ## 평가 프로토콜 요약
