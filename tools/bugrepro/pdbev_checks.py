@@ -56,13 +56,17 @@ def data_config(**over):
     return dc
 
 
-def run_pipeline(index, dc, aug=None, heatmaps=True):
-    """PrepareImageInputs_UDA -> LoadAnnotationsBEVDepth (no BDA) -> Load3DBoxesHeatmap."""
+def run_pipeline(index, dc, aug=None, heatmaps=True, edit=None):
+    """PrepareImageInputs_UDA -> LoadAnnotationsBEVDepth (no BDA) -> Load3DBoxesHeatmap.
+
+    edit(results) may change the sample (e.g. add a synthetic box) before the pipeline."""
     from mmdet3d.datasets.pipelines.loading_UDA import PrepareImageInputs_UDA, Load3DBoxesHeatmap
     from mmdet3d.datasets.pipelines.loading import LoadAnnotationsBEVDepth
     ds = pccr_dataset()
     results = ds.get_data_info(index)
     ds.pre_pipeline(results)
+    if edit is not None:
+        edit(results)
     prep = PrepareImageInputs_UDA(data_config=dc, is_train=True, ego_cam=None)
     if aug is not None:
         prep.sample_augmentation = lambda H, W, flip=None, scale=None: aug
@@ -190,22 +194,35 @@ def check_pdbev5():
 
 
 def check_pdbev6():
-    """Mask/regression windows must stay at the object (no writes wrapped to the far border)."""
-    idx = pick_sample()
-    # resize 0.66 and a bottom crop push the upper image rows above the feature map
-    aug = (0.66, (844, 475), (60, 91, 764, 475), False, 0.0)
-    r, hm, mask, ann = _targets(idx, aug)
-    ref, (H8, W8) = reference_centres(r)
-    bad = missing = 0
-    for i, cam in enumerate(ref):
-        want = torch.zeros(H8, W8, len(CLASSES), dtype=torch.bool)
-        for u, v, l in cam:
-            want[max(v - 1, 0):v + 2, max(u - 1, 0):u + 2, l] = True
-        got = mask[i] > 0
-        bad += int((got & ~want).sum())
-        missing += int((want & ~got).sum())
-    return report('pdbev6', bad == 0 and missing == 0,
-                  f'sample {idx}: {bad} mask cells outside the objects\' windows, {missing} missing')
+    """Mask/regression windows must stay at the object (no writes wrapped to the far border).
+
+    A synthetic car 9.6 m ahead of the front bumper camera at 3 m height projects into the top
+    of the original image (row ~127). With resize 0.8 and a bottom crop of 192 rows its centre
+    lands 11 rows above the feature map, where the old validity check (pre-augmentation image
+    bounds) still accepted it and the window slices y-1:y+2 became negative.
+    """
+    def add_high_car(results):
+        boxes, labels = results['ann_infos']
+        boxes = list(boxes) + [np.array([12.0, 0.0, 3.0, 4.5, 1.9, 1.5, 0.0, 0.0, 0.0])]
+        results['ann_infos'] = [boxes, list(labels) + [0]]
+    aug = (0.8, (1024, 576), (160, 192, 864, 576), False, 0.0)
+    r = run_pipeline(0, data_config(), aug=aug, edit=add_high_car)
+    msgs, ok = [], True
+    # real views use a 3x3 window, virtual views (bev_aug, no perturbation here) rows y-1..y
+    for view, key, rows in (('real', 'heatmap_masks_2d', (1, 2)), ('aug', 'heatmap_masks_2d_aug', (1, 1))):
+        mask = r[key]
+        ref, (H8, W8) = reference_centres(r, view=view)
+        bad = missing = 0
+        for i, cam in enumerate(ref):
+            want = torch.zeros(H8, W8, len(CLASSES), dtype=torch.bool)
+            for u, v, l in cam:
+                want[max(v - rows[0], 0):v + rows[1], max(u - 1, 0):u + 2, l] = True
+            got = mask[i] > 0
+            bad += int((got & ~want).sum())
+            missing += int((want & ~got).sum())
+        ok &= bad == 0 and missing == 0
+        msgs.append(f'{view}: {bad} cells outside the windows, {missing} missing')
+    return report('pdbev6', ok, 'sample 0 + synthetic high car: ' + '; '.join(msgs))
 
 
 def check_pdbev8():

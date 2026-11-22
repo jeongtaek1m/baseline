@@ -935,7 +935,8 @@ class Load3DBoxesHeatmap(object):
             box_width = corners_lidar_img[:, :, 0].max(1) - corners_lidar_img[:, :, 0].min(1)
             box_height = corners_lidar_img[:, :, 1].max(1) - corners_lidar_img[:, :, 1].min(1)
             # 判断有效性
-            valid = np.logical_and(valid, self.check_point_in_img(gravity_center_img, height, width))
+            # Gen2E (PDBEV-6/7): validity is checked below on the augmented feature-map coordinates.
+            # Upstream checked here, on the original image of camera 0, before crop/flip/rotate.
             # 3D box 对应增广： 修改center和长宽高
             [resize, resize_dims, crop, flip, rotate] = results['img_aug']['cam'+ str(cam_names.index(cam_name))][0]
             post_rot2 = results['img_aug']['cam'+ str(cam_names.index(cam_name))][1]
@@ -954,6 +955,9 @@ class Load3DBoxesHeatmap(object):
             box_width = resize * box_width / self.downsample_feature
             box_height = resize * box_height / self.downsample_feature
             height_act, width_act = crop[3] - crop[1], crop[2] - crop[0]
+            H8, W8 = int(height_act / self.downsample_feature), int(width_act / self.downsample_feature)
+            uv8 = gravity_center_img.numpy()
+            valid = np.logical_and(valid, (uv8[:, 0] >= 0) & (uv8[:, 0] < W8) & (uv8[:, 1] >= 0) & (uv8[:, 1] < H8))
             # 生成heatmap
             heatmap = gravity_center_img.new_zeros(int(height_act / self.downsample_feature),
                                                    int(width_act / self.downsample_feature), self.classes_num)
@@ -977,20 +981,20 @@ class Load3DBoxesHeatmap(object):
                     x_int, y_int = center_int[center_index, 0], center_int[center_index, 1]
                     self.draw_gaussian(heatmap[:, :, gt_labels[center_index]],
                                        [center_int[center_index, 0], center_int[center_index, 1]], radius)
-                    heatmap_mask[y_int - 1:y_int + 2, x_int - 1:x_int + 2, gt_labels[center_index]] = 1
+                    heatmap_mask[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, gt_labels[center_index]] = 1
                     # heatmap_mask[y_int, x_int, gt_labels[center_index]] = 1
-                    ann_map[y_int - 1:y_int + 2, x_int - 1:x_int + 2, 0, gt_labels[center_index]] = gravity_center_img[
+                    ann_map[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, 0, gt_labels[center_index]] = gravity_center_img[
                                                                                                         center_index, 0] - \
                                                                                                     center_int[
                                                                                                         center_index, 0]
-                    ann_map[y_int - 1:y_int + 2, x_int - 1:x_int + 2, 1, gt_labels[center_index]] = gravity_center_img[
+                    ann_map[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, 1, gt_labels[center_index]] = gravity_center_img[
                                                                                                         center_index, 1] - \
                                                                                                     center_int[
                                                                                                         center_index, 1]
-                    ann_map[y_int - 1:y_int + 2, x_int - 1:x_int + 2, 2, gt_labels[center_index]] = depth[center_index, 0]
-                    ann_map[y_int - 1:y_int + 2, x_int - 1:x_int + 2, 3:6, gt_labels[center_index]] = torch.tensor(
+                    ann_map[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, 2, gt_labels[center_index]] = depth[center_index, 0]
+                    ann_map[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, 3:6, gt_labels[center_index]] = torch.tensor(
                         gt_boxes[center_index, 3:6])
-                    ann_map[y_int - 1:y_int + 2, x_int - 1:x_int + 2, 6, gt_labels[center_index]] = torch.tensor(
+                    ann_map[max(y_int - 1, 0):y_int + 2, max(x_int - 1, 0):x_int + 2, 6, gt_labels[center_index]] = torch.tensor(
                         depth_real[center_index, 0])
                     # ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 5, gt_labels[center_index]] = torch.sin(
                     #     torch.tensor(gt_boxes[center_index, 6])).unsqueeze(0)
@@ -1073,7 +1077,8 @@ class Load3DBoxesHeatmap(object):
             box_width = corners_lidar_img[:, :, 0].max(1) - corners_lidar_img[:, :, 0].min(1)
             box_height = corners_lidar_img[:, :, 1].max(1) - corners_lidar_img[:, :, 1].min(1)
             # 判断有效性
-            valid = np.logical_and(valid, self.check_point_in_img(gravity_center_img, height, width))
+            # Gen2E (PDBEV-6/7): validity is checked below on the augmented feature-map coordinates.
+            # Upstream checked here, on the original image of camera 0, before crop/flip/rotate.
             # 3D box 对应增广： 修改center和长宽高
             [resize, resize_dims, crop, flip, rotate] = results['img_aug']['cam'+str(cam_names.index(cam_name))][0]
             post_rot2 = results['img_aug']['cam'+ str(cam_names.index(cam_name))][1]
@@ -1092,6 +1097,9 @@ class Load3DBoxesHeatmap(object):
             box_width = resize * box_width / self.downsample_feature
             box_height = resize * box_height / self.downsample_feature
             height_act, width_act = crop[3] - crop[1], crop[2] - crop[0]
+            H8, W8 = int(height_act / self.downsample_feature), int(width_act / self.downsample_feature)
+            uv8 = gravity_center_img.numpy()
+            valid = np.logical_and(valid, (uv8[:, 0] >= 0) & (uv8[:, 0] < W8) & (uv8[:, 1] >= 0) & (uv8[:, 1] < H8))
 
             # 生成heatmap
             heatmap = gravity_center_img.new_zeros(int(height_act / self.downsample_feature),
@@ -1114,20 +1122,20 @@ class Load3DBoxesHeatmap(object):
                     x_int, y_int = center_int[center_index, 0], center_int[center_index, 1]
                     self.draw_gaussian(heatmap[:, :, gt_labels[center_index]],
                                        [center_int[center_index, 0], center_int[center_index, 1]], radius)
-                    heatmap_mask[y_int - 1:y_int + 1, x_int - 1:x_int + 2, gt_labels[center_index]] = 1
-                    ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 0, gt_labels[center_index]] = gravity_center_img[
+                    heatmap_mask[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, gt_labels[center_index]] = 1
+                    ann_map[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, 0, gt_labels[center_index]] = gravity_center_img[
                                                                                                         center_index, 0] - \
                                                                                                     center_int[
                                                                                                         center_index, 0]
-                    ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 1, gt_labels[center_index]] = gravity_center_img[
+                    ann_map[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, 1, gt_labels[center_index]] = gravity_center_img[
                                                                                                         center_index, 1] - \
                                                                                                     center_int[
                                                                                                         center_index, 1]
-                    ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 2, gt_labels[center_index]] = depth[
+                    ann_map[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, 2, gt_labels[center_index]] = depth[
                         center_index, 0]
-                    ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 3:6, gt_labels[center_index]] = torch.tensor(
+                    ann_map[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, 3:6, gt_labels[center_index]] = torch.tensor(
                         gt_boxes[center_index, 3:6])
-                    ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 6, gt_labels[center_index]] = torch.tensor(depth_real[
+                    ann_map[max(y_int - 1, 0):y_int + 1, max(x_int - 1, 0):x_int + 2, 6, gt_labels[center_index]] = torch.tensor(depth_real[
                         center_index, 0])
                     # ann_map[y_int - 1:y_int + 1, x_int - 1:x_int + 2, 5, gt_labels[center_index]] = torch.sin(
                     #     torch.tensor(gt_boxes[center_index, 6])).unsqueeze(0)
