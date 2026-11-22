@@ -1,0 +1,571 @@
+{
+ "topic": "UniDrive (ICLR'25) and CoIn3D (CVPR'26): code, licenses, method changes, rig assumptions and port plans for BEVDepth and BEVFormer-small",
+ "summary_md": "# UniDrive [44] and CoIn3D [41]: code audit for porting onto BEVDepth and BEVFormer-small\n\nLegend: [V] = I checked it in code or on a fetched page. [I] = my inference. I did not execute or import anything from the clones. The analysis is reading and diffing only.\n\nLocal clones (scratch, safe to delete):\n- UniDrive: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/UniDrive` (master @ c73f887)\n- CoIn3D: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/CoIn3D` (master @ b53019d)\n- Upstreams used for diffing: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/upstream/BEVDet-dev3.0` (26144be) and `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/upstream/bevfusion` (snapshot f39a4a0 extracted to `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/upstream/bevfusion_f39`)\n- Paper text dumps: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/papers/unidrive_v2.txt`, `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/papers/coin3d_main.txt`, `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/papers/coin3d_supp.txt`\n\nAll file:line references below are relative to the clone root of the repo being discussed.\n\n## 0. At a glance\n\n| | UniDrive [44] | CoIn3D [41] |\n|---|---|---|\n| Paper | Ye Li, Wenzhao Zheng, Xiaonan Huang, Kurt Keutzer. ICLR 2025. arXiv 2410.13864 (v1 2024-10-17, v2 2025-06-22) | Zhaonian Kuang, Rui Ding, Haotian Wang, Xinhu Zheng, Meng Yang, Gang Hua. *CoIn3D: Revisiting Configuration-Invariant Multi-Camera 3D Object Detection*. CVPR 2026 main track, pp. 40707-40716. arXiv 2603.05042 (v1 2026-03-05, v2 2026-03-26) |\n| Code | github.com/ywyeli/UniDrive. 21 commits. Code uploaded 2024-10-18. Last commit 2025-07-02 (c73f887) | github.com/kwong292521/CoIn3D. Default branch `master` has 5 commits (2026-05-30 to 2026-07-08, last b53019d). Branch `main` contains only a README |\n| Is the code really there? | Yes, but the method itself is about 250 lines in 2 files under `project/`. The rest is BEVFusion plus a CARLA data toolkit | Yes: a full BEVDepth4D implementation plus the data-prep pipeline. There is no BEVFormer or PETR code |\n| License | MIT | No license for the CoIn3D code itself. BEVDet part is Apache-2.0. The Gaussian rasterizer is under Inria's non-commercial license |\n| Base | BEVFusion-C (mit-han-lab snapshot f39a4a0, 2022-09-26). Vendored mmdet3d fork with no version file. mmcv-full 1.4.0, mmdet 2.20.0, torch 1.10.1/cu113 | BEVDet dev3.0 (26144be), mmdet3d 1.0.0rc4. torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0. Model: BEVDepth4D-R50 at 384x704 |\n| What changes | Input preprocessing only: every real view is warped into a fixed virtual rig, and the camera parameters are swapped for the virtual ones | Model: 9 channels of spatial prior maps are concatenated to RGB and used to modulate backbone and neck features. BEVDepth's camera-aware SE is disabled. Data: Gaussian novel-view rendering of random rigs, plus focal augmentation on raw images. Loss: depth GT is re-projected into the novel view and masked to foreground boxes |\n| Test time | Target images go through the same warp into the same virtual rig. Needs only the target calibration | Raw target images. Priors are computed from the target calibration. No adaptation |\n| Training data | One rig. Images and calibration (LiDAR only if the detector needs depth). The paper's CMA-ES step also needs calibrations of all rigs plus 3D boxes | One rig. For CDA: LiDAR sequences, tracked (4D) boxes, and heavy offline reconstruction (about 0.87 TB of metadata for nuScenes) |\n| Plug-and-play? | Conceptually yes for both detectors. The code cannot be reused as-is | No: it needs encoder surgery and a data/training hook. Only BEVDepth is released |\n\n## 1. UniDrive\n\n### 1.1 Identity [V]\n- The arXiv Comments field links the code repo (\"ICLR 2025; ... Code at github.com/ywyeli/UniDrive\"). The project page wzzheng.net/UniDrive links the same repo.\n- The README says the datasets are on OpenDataLab, but gives no link.\n\n### 1.2 What the repo actually contains [V]\n- `create/`: data collection with CARLA 0.9.10 scenario_runner, plus tools that write nuScenes-format labels. Rig definitions are in `create/carla_nus/hyperparams/*.toml`.\n- `extra/nuscenes`: a customized nuscenes-devkit. `assets/DATA_PREPARE.md` says it must replace the official devkit.\n- `detection_methods/bevfusion`: a copy of mit-han-lab/bevfusion at f39a4a0.\n  - After checking out f39a4a0, `diff -rq mmdet3d` shows only `datasets/nuscenes_dataset.py` and `heads/bbox/transfusion.py` differ, plus edits to the class lists for 6 CARLA classes.\n  - DATA_PREPARE.md tells users to run this copy, but it **does not contain the UniDrive projection**.\n- `project/`: the same BEVFusion copy plus the UniDrive projection, which lives in only two files (`project/mmdet3d/datasets/nuscenes_dataset.py` and `project/mmdet3d/datasets/pipelines/loading.py`). It also patches `tools/train.py:98` and `tools/test.py:231` to set the 'spawn' start method.\n  - The owner points to this code in issue #3 (\"We set D0 in line 139 in project/mmdet3d/datasets/pipelines/loading.py\").\n  - `project/mmdet3d/ops` contains 12 precompiled cpython-38 .so files. Treat them as untrusted and rebuild.\n- Not in the repo:\n  - The CMA-ES virtual-configuration optimizer. In issue #7 the owner says \"We directly use the cmaes python library\".\n  - The optimized virtual-rig parameters.\n  - Benchmark configs.\n  - `assets/INSTALL.md` and `assets/GET_STARTED.md`, which are 1-byte files.\n\n### 1.3 The method as implemented [V]\nThe method is pure input preprocessing. The detector, view transform and losses are stock BEVFusion-C: Swin-T + GeneralizedLSSFPN + LSSTransform without depth supervision + CenterHead, 256x704, samples_per_gpu 4 (`project/configs/nuscenes/det/centerhead/lssfpn/camera/256x704/swint/default.yaml`).\n\n**Camera parameters are swapped in `nuscenes_dataset.py:get_data_info` (215-507):**\n- The real parameters are kept under `real_*` keys (247-251, 467-498). `camera2ego`, `camera_intrinsics`, `lidar2camera`, `camera2lidar` and `lidar2image` are overwritten with virtual ones (394-464).\n- Virtual rig: one virtual camera per real slot, keyed by the nuScenes camera name (253-289).\n  - Yaw is 0, -60 (FRONT_RIGHT), +60 (FRONT_LEFT), 180, +120 (BACK_LEFT) and -120 (BACK_RIGHT), with zero pitch and roll. These angles are decoded from the quaternions.\n  - **All six cameras sit at (0,0,1.5) in the ego frame** (363-392). Non-co-located variants are commented out at 303-362.\n  - K = [[1385.64,0,800],[0,1385.64,450]], i.e. 60 deg HFoV at 1600x900 (424-442). A 70 deg variant is commented out at 443-459.\n  - This is the paper's \"intuitive\" roof-centre rig, i.e. Fig. 5(b) \"w/o optimization\". The headline numbers in the paper's Table 2 match Fig. 5(c), which is the optimized rig.\n- The virtual LiDAR is hard-coded at t=(0,0,1.5), q=(0.707,0,0,-0.707) (291-302). It is used to build `lidar2camera` and `camera2lidar` (405-420) instead of the dataset's own `lidar2ego`.\n  - BEVFusion's BEV geometry uses `camera2lidar` (`project/mmdet3d/models/vtransforms/base.py:79-106,187-194`), and the GT boxes are in the real LiDAR frame.\n\n**Image warping in `loading.py`:**\n- `LoadMultiViewImageFromFiles` (168-237) loads the real images and calls `run_project_pixels_cuda` with a fixed list of the 6 nuScenes camera names (209-222).\n- The numba CUDA kernel `project_pixels_cuda` (29-93) works per virtual pixel:\n  - If v > 500 (`Bottom_half`, 37), it intersects the ray with the ground at camera height `z_virtual + 0.1` (40-51). This puts the ground at ego z = -0.1 and assumes gravity-aligned virtual cameras.\n  - Otherwise it uses a point on the plane Z = 50 m in the virtual-camera frame (52-62; `Dis = 50` at 139).\n  - It then maps the point to ego, then to the real camera, projects it, and copies the nearest pixel if the point is in front of the camera and inside the image (64-93).\n- Driver (96-165):\n  - It runs 6 x 6 kernel launches per sample, each with fresh host-to-device copies (106-150).\n  - The neighbour filter `if original_cam_name in camera_relations[original_cam_name]` (107) is always true.\n  - Overlapping views overwrite each other, so the last camera in the list wins.\n  - `output_weights` is computed, but the normalization is commented out (152-157).\n  - Output is always 900x1600 (102).\n- Evaluation: `eval_version='detection_carla'` (`nuscenes_dataset.py:144`), but only `extra/nuscenes/eval/detection/configs/detection_cvpr_2019.json` exists, so `config_factory` asserts.\n\n### 1.4 Paper vs code [V]\n- Eq. 1 omits the 1/fx term; the code has it. This was reported in issue #5 and the owner says the revised paper fixes it.\n- Depth rule:\n  - Paper: ground point if D^ < D0, otherwise a sphere of radius D0 (the text calls it \"cylindrical-like\").\n  - Code: a row threshold (v > 500) and the plane Z = 50.\n- Blending: the paper uses a weighted average (Eq. 3); the code overwrites.\n- Virtual-rig optimization:\n  - Paper: CMA-ES minimizes, over S rigs, the sum of box-corner angular reprojection errors weighted by distance (Eqs. 4-11).\n  - Code: absent.\n- Experiments: BEVFusion-C only, on 8 CARLA rigs (4x95, 5x75, 6x60/70/80a/80b, 5x70+110 nuScenes-like, 8x50) at 1600x900. Train on one rig, test on the others. Paper result: 5x70+110 gives 63.9 mAP with BEVFusion-C and 68.8 with UniDrive.\n- In the CoIn3D supplement (Table 3), the CoIn3D authors ran UniDrive on BEVDepth: N->L NDS* 0.440 and N->W 0.298. That code is not released, but the numbers are a useful sanity reference.\n\n### 1.5 Plug-and-play assessment [I, based on V]\nBecause only the inputs and camera parameters change, UniDrive suits both a forward view transform (BEVDepth) and a backward one (BEVFormer-small). The released code cannot be reused directly:\n- It is BEVFusion-specific.\n- It depends on numba CUDA in the dataloader workers.\n- It is tied to the 6 nuScenes camera names and to a camera count of 6.\n- It hard-codes the virtual LiDAR pose.\n\nThe warp depends only on calibration (the kernel never looks at image content to compute geometry). So the right port is a **per-rig lookup table, computed once and applied with cv2.remap or grid_sample**, mapping N real cameras to K virtual cameras.\n\n- BEVDepth: you need to decide where depth GT comes from. LiDAR projected into the virtual cameras is geometrically correct but does not match warped content off the ground plane.\n- BEVFormer-small: rebuild `lidar2img` from the virtual cameras and the real `lidar2ego`.\n  - num_cams stays at 6, which keeps `cams_embeds` consistent across R1-c6, R1-c10 and R2-R9.\n  - Warp all frames in the history queue.\n  - In issue #10 the owner advises dropping virtual cameras that the real rig does not cover (e.g. back views for Waymo).\n\n## 2. CoIn3D\n\n### 2.1 Identity [V]\nThe repo is not linked from arXiv or the CVPR page. It is attributed to the authors because:\n- The README carries the title and BibTeX.\n- The commit author is \"znkwong\" (Zhaonian Kuang).\n- The checkpoints and data are on ModelScope under `znkwong/CoIn3D_Data`; the nuscenes.pth checkpoint (303.8 MB) resolves.\n- Configs contain `/data1/znkwong/...` paths.\n\nRepo history:\n- `git ls-remote` shows HEAD -> master (b53019d) and main (a3c7d67, README only).\n- `BEVDet/mmdet3d/datasets/` was only added on 2026-07-08 (\"Add missing dataset files\").\n\n### 2.2 Repo contents [V]\n- `BEVDet/` is BEVDet dev3.0 at 26144be. `diff -rq` against a clone shows changes only in:\n  - apis/{train,test}.py\n  - core/hook/{__init__,nvs_gs3d}.py\n  - datasets/{custom_3d,nuscenes_dataset}.py\n  - datasets/pipelines/{__init__,loading,transforms_3d}.py\n  - models/dense_heads/centerpoint_head.py\n  - models/detectors/{bevdet,prior_utils}.py\n  - models/necks/{fpn,view_transformer}.py\n  - a new gaussian3d_kernel/\n  - tools/\n- The data converters and analysis tools were removed.\n- The only model is BEVDepth4D-R50 with 1 adjacent frame: 9 configs in `BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/`, covering nuscenes/lyft/waymo/mix with raw, general_3cls or caronly classes.\n- `data_preprocess/` holds steps 1.1-5.2 plus vendored copies of SPNet and ZITS++.\n- `third_party/` holds diff-gaussian-rasterization (a fork that also renders depth) and an extended nuscenes-devkit that adds cross-dataset evaluation (`cde_setting`).\n\n### 2.3 SFM, spatial-aware feature modulation [V]\n`PriorMapGenerator` (`BEVDet/mmdet3d/models/detectors/prior_utils.py:72-385`) builds per-pixel maps on the GPU at every forward pass, from sensor2ego, K and the image-augmentation matrix. The maps used (`map2use`, config line 47; 9 channels in total):\n\n| Map | Definition | Code |\n|---|---|---|\n| ground_depth | Depth to the plane **ego z=0**, clipped to (0, 60] m, divided by 25 | 136-160, 178-181 |\n| gd_grad | log(1/dz + 1)/2 of the vertical depth difference | 171-176 |\n| plucker_ray | d = R K^-1 p (unnormalized) | 187-219 |\n| plucker_moment | Default is cross(ego origin in camera frame, d) (206-208). Only the `*general_3cls.py` configs set `cam_in_ego`, which matches the paper's m = t x d (209-211) | 206-211 |\n| inv_focal | 1/(f_aug/500)^2 | 252-270 |\n\nDuring training only, the extrinsics are randomly flipped front-to-back with a fixed `[0,0,180]`, `[1.6,0,0]` transform (190-196).\n\nHow the priors enter the model (`BEVDet/mmdet3d/models/detectors/bevdet.py`):\n- They are concatenated to the RGB input (543-550). conv1 is widened from 3 to 12 channels by `prior_adapt` (62-69). It is called after `init_weights` in `tools/train.py:270-271`, and before the checkpoint is loaded in `tools/test.py:275-276`.\n- `PM_InvFMul_GDGGPRAdd` (`prior_utils.py:41-67`) modulates features: feat x inv_focal + ReLU(Conv3x3([gd, gg, ray, moment])). It is applied after C4 (1024 ch, stride 16), after C5 (2048 ch, stride 32) and after the neck (512 ch) (`bevdet.py:52-59, 92-127`). The priors are then concatenated again (`prior_utils.py:22-33`), downsampled by a masked mean (273-316).\n- As a result, the FPN and DepthNet input channels grow by 9 (config 113 and 123).\n\n`block_cam_aware=True` (`BEVDet/mmdet3d/models/necks/view_transformer.py:526, 588, 651-652`) replaces BEVDepth's camera-aware MLP input with ones. This disables the camera-aware SE; per paper Table 3, keeping it hurts.\n\n### 2.4 CDA, camera-aware data augmentation [V]\n`PrepareNVSMetaData` (`BEVDet/mmdet3d/datasets/pipelines/loading.py:1281-2366`).\n\nWith p_raw = 0.5 it uses the **raw image**:\n- Focal augmentation `aug_K_on_raw`: ratio 0.94-1.4, done by crop-zoom about the principal point.\n- In-plane rotation of +/-5.4 deg.\n- Implemented in `raw_style_augmentation` (1856-2043).\n\nOtherwise it loads **per-sample ego-centric Gaussians** (1487-1528) and samples a novel rig:\n- Ego roll and pitch +/-2 deg (2306-2317).\n- Per-camera tx and ty +/-0.2 m, **tz ~ U(1.5, 2.2) m absolute**, yaw +/-20 deg. No per-camera roll or pitch (3231-3289).\n- fu = fv ~ U(385, 770) px at 704-px width, with jitter on the principal point (3292-3330).\n- The adjacent frame reuses the same rig (`sync_adj_aug`, 2319-2324).\n\nDepth GT for the novel view:\n- The LiDAR points stored in the npz are z-buffer-projected into the novel cameras (1791-1853).\n- The result is masked to the 2D boxes of 'car' (`fg_depth_only='car'`, 2078-2162).\n\nRendering:\n- Happens on the GPU in `NovelViewSynthesisHook.before_train_iter` (`BEVDet/mmdet3d/core/hook/nvs_gs3d.py:12-28, 62-197`).\n- Gaussians are isotropic, with opacity 1 and fixed radii (config 230-236).\n\nRendering the actual target rig is possible via `tgt_cam_cfg_file` (1375-1382, 1636-1675), but no released config uses it.\n\nOther changes to the recipe:\n- The velocity head is removed (code_size 7).\n- `mmlabNormalize` uses `to_rgb=False` (853-862), fixing an RGB/BGR bug in BEVDet.\n- bda is a 4x4 matrix (`bevdet.py:395`).\n- Per-camera timestamp sync uses `*_unsync` keys (2064-2075).\n- Training: 24 epochs, AdamW lr 2e-4, batch 8 per GPU, EMA.\n\n### 2.5 Test time [V]\n`get_inputs_test` (2165-2254):\n- Raw images are resized to width 704 and cropped from the bottom.\n- The real target K and cam2ego are used, and the priors are computed from them. Nothing else is done at test time.\n- For 4D models, `tools/test.py` sets `align_after_view_transfromation=True`.\n- Each target config defines its own input size and camera list (Waymo: 5 cameras, 320x704).\n\n### 2.6 Paper vs code [V]\n- The paper also reports BEVFormer-**tiny** and PETR-vov at width 800, with no implementation details in either the paper or the supplement. Neither is in the code.\n- Paper: f ~ U(0.7f, 1.4f). The nuScenes configs instead use an absolute range of 385-770 px, which is about 0.69-1.38x for nuScenes at 704 px.\n- Paper: per-camera rx, ry ~ +/-2 deg. Code: +/-2 deg roll and pitch applied to the ego.\n- Background Gaussian radius: the paper says 0-10 m; the config has `[0.02, 0.001, 5]`.\n- The paper places SFM after the backbone and neck. The code also concatenates the priors at the input.\n\n### 2.7 Data, storage and compute\nCDA needs [V]:\n- LiDAR sequences, ego poses, tracked 3D boxes (instance IDs) and calibration.\n- A pipeline: VDBFusion TSDF meshes, watertight fix, PyTorch3D depth rendering, SPNet completion (the weights path is hard-coded and the weights are not shipped), SAM ego-part masks, texture retrieval, optional ZITS++ inpainting, and Gaussian pre-generation (README 104-161).\n- The info-pkl generator and the Lyft/Waymo converters are not released (\"[TODO]\").\n\nSize of the metadata ModelScope provides for nuScenes [V]:\n\n| Asset | Size |\n|---|---|\n| gaussians (12 shards) | 551 GB |\n| inpainted | 127 GB |\n| depths | 64 GB |\n| objs_model | 61 GB |\n| meshes | 50 GB |\n| masks | 16 GB |\n| **Total metadata** | **about 0.87 TB** |\n| images (width 800), separate | 55 GB |\n\nPaper ablations (N->W, BEVDepth, NDS*) [V]:\n\n| Setting | NDS* |\n|---|---|\n| Direct transfer | 0.178 |\n| CDA only | 0.224 |\n| SFM only | 0.358 |\n| SFM + F-Aug | 0.418 |\n| SFM + F-Aug + NVS (full) | 0.513 |\n\nBEVFormer-tiny N->W: 0.069 -> 0.379.\n\n### 2.8 Plug-and-play assessment [I]\nCoIn3D is not plug-and-play. It needs surgery on the image encoder (input channels, modulation layers, neck and DepthNet widths), a change to BEVDepth's DepthNet, a new data pipeline and a GPU render hook in the training loop. The released code covers only BEVDet-style BEVDepth4D. BEVFormer-small has to be re-implemented.\n\n## 3. Environment fit on this machine [V]\n- Envs `bevformer` and `open-mmlab`: torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0, mmdet3d 0.17.1, numba 0.48.0. These fit BEVFormer-small and a cv2-based UniDrive warp.\n- Env `tcar_bevdet`: torch 1.10.0+cu113, mmcv-full 1.5.3, mmdet 2.25.1, no mmdet3d.\n- No env matches CoIn3D's stack. None has diff_gaussian_rasterization, cmaes, vdbfusion, pytorch3d or segment_anything.\n- Building the rasterizer for sm_89 needs CUDA >= 11.8 (or build sm_86 with 11.6).\n- Free disk: / 323 GB, /data2 541 GB, /data4 133 GB, NAS 3.2 TB (NFS). CoIn3D-scale metadata does not fit on the local NVMe free space.\n- RAM 376 GB and /dev/shm 189 GB are fine.\n\n## 4. Decisions needed from the user\nThe full list is in open_questions. The most important ones:\n- Which BEVDepth codebase.\n- Whether R1 has LiDAR sequences and tracked boxes.\n- UniDrive: which virtual rig (code default vs CMA-ES, and whether target calibrations may be used) and which depth GT for BEVDepth.\n- CoIn3D: full NVS-CDA vs SFM + focal augmentation only, and the augmentation ranges.\n- Licensing for the GitHub release.\n",
+ "components": [
+  {
+   "name": "UniDrive virtual-camera projection kernel",
+   "files": [
+    "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:19-165",
+    "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:168-237"
+   ],
+   "role": "Warps all real camera images into fixed virtual views. Pixels below row 500 use a ground-plane depth at virtual camera height +0.1 m; pixels above use the plane Z=50 m. Sampling is nearest-pixel with last-writer-wins overwrite. Implemented as a numba CUDA kernel in the dataloader.",
+   "method_specific": true,
+   "port_notes": "Re-implement as a calibration-only lookup table (computed once per rig, applied with cv2.remap or grid_sample). Map N real cameras to K virtual cameras, with no dependence on camera names. Expose as parameters: the switch rule (row v>500 vs D^<D0), the surface (plane vs sphere), the ground height, and the blending mode."
+  },
+  {
+   "name": "UniDrive virtual rig definition and camera-parameter swap",
+   "files": [
+    "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:215-507"
+   ],
+   "role": "Overwrites camera2ego, intrinsics, lidar2camera, camera2lidar and lidar2image with a hard-coded virtual rig: 6 cameras at (0,0,1.5), yaw 0/+-60/+-120/180, 60 deg HFoV at 1600x900. Keeps the real parameters under real_* keys. Uses a hard-coded virtual LiDAR pose.",
+   "method_specific": true,
+   "port_notes": "Keep the virtual rig as a config object (count, yaw/pitch/position, K, size). Build lidar2img and sensor2ego from the dataset's real lidar2ego, not the hard-coded (0,0,1.5)/yaw -90 pose. Decide whether to re-tune the rig for R1 or optimize it with CMA-ES."
+  },
+  {
+   "name": "UniDrive multiprocessing patch",
+   "files": [
+    "UniDrive/project/tools/train.py:98",
+    "UniDrive/project/tools/test.py:231"
+   ],
+   "role": "Forces the 'spawn' start method so the numba CUDA kernel can run inside DataLoader workers.",
+   "method_specific": true,
+   "port_notes": "Not needed if the warp is done with cv2.remap on the CPU or on the GPU inside the model."
+  },
+  {
+   "name": "UniDrive virtual-configuration optimizer (CMA-ES)",
+   "files": [
+    "(not in repo) paper Sec. 3.3-3.4, Eqs. 4-11, Alg. 2"
+   ],
+   "role": "Optimizes the virtual rig parameters by minimizing the distance-weighted angular reprojection error of 3D box corners, summed over S rigs.",
+   "method_specific": true,
+   "port_notes": "Must be written from the paper using the pip 'cmaes' package (as the owner states in issue #7). Needs the calibrations of every rig to be supported plus a set of 3D boxes."
+  },
+  {
+   "name": "BEVFusion-C detector (UniDrive base)",
+   "files": [
+    "UniDrive/project/mmdet3d/**",
+    "UniDrive/detection_methods/bevfusion/**",
+    "UniDrive/project/configs/nuscenes/det/centerhead/lssfpn/camera/256x704/swint/default.yaml"
+   ],
+   "role": "Swin-T + GeneralizedLSSFPN + LSSTransform (no depth supervision) + CenterHead, from mit-han-lab/bevfusion snapshot f39a4a0 with 6 CARLA classes.",
+   "method_specific": false,
+   "port_notes": "Not ported. Gen2E uses BEVDepth and BEVFormer-small as bases."
+  },
+  {
+   "name": "UniDrive CARLA data toolkit and custom nuscenes-devkit",
+   "files": [
+    "UniDrive/create/**",
+    "UniDrive/extra/nuscenes/**"
+   ],
+   "role": "CARLA 0.9.10 scenario runner and rig TOMLs; nuScenes-format label generation; customized devkit with a 6-class detection config.",
+   "method_specific": false,
+   "port_notes": "Only relevant if Gen2E data comes from CARLA. Note the broken det_6x70.toml and the missing detection_carla eval config."
+  },
+  {
+   "name": "CoIn3D PriorMapGenerator (SFM prior maps)",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:72-385"
+   ],
+   "role": "Computes per-pixel inverse-focal, ground-depth (ego z=0 plane), ground-gradient, Pluecker ray and moment maps from K, cam2ego and image augmentation on the GPU at every forward pass. Also downsamples them to stride 16 and 32.",
+   "method_specific": true,
+   "port_notes": "Framework-agnostic. Needs K, cam2ego and the image augmentation matrix per camera. Check the ego convention (ground at z=0) for R1-R9. Choose plucker_moment_origin. The normalization constants (500, 25, 2) assume roughly 704-px width."
+  },
+  {
+   "name": "CoIn3D modulation layer PM_InvFMul_GDGGPRAdd",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:10-67"
+   ],
+   "role": "Computes feat x inv_focal map + ReLU(Conv3x3([gd, gg, ray, moment])), then optionally concatenates the raw priors.",
+   "method_specific": true,
+   "port_notes": "Concatenating priors changes channel counts (+9). For BEVFormer's 256-d transformer input, either add a 1x1 conv projection or skip the concat after the neck."
+  },
+  {
+   "name": "CoIn3D BEVDepth4D integration",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/bevdet.py:52-127",
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/bevdet.py:395",
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/bevdet.py:442-447",
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/bevdet.py:543-569",
+    "CoIn3D/BEVDet/tools/train.py:270-271",
+    "CoIn3D/BEVDet/tools/test.py:275-276"
+   ],
+   "role": "Widens conv1 from 3 to 12 channels (prior_adapt), concatenates priors to the input, and modulates features at C4, C5 and the neck. Prior maps are computed per frame for the temporal (adjacent) frames.",
+   "method_specific": true,
+   "port_notes": "Call prior_adapt after pretrained weights are loaded (ImageNet init or load_from) and before the CoIn3D checkpoint is loaded. With a load_from checkpoint such as BEVFormer's FCOS3D, the ordering needs a custom hook."
+  },
+  {
+   "name": "CoIn3D DepthNet change (camera-aware SE disabled)",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/models/necks/view_transformer.py:526",
+    "CoIn3D/BEVDet/mmdet3d/models/necks/view_transformer.py:588",
+    "CoIn3D/BEVDet/mmdet3d/models/necks/view_transformer.py:651-652"
+   ],
+   "role": "With block_cam_aware=True, BEVDepth's camera-parameter MLP input is replaced with ones.",
+   "method_specific": true,
+   "port_notes": "In Megvii BEVDepth this is the mlp_input built in get_mlp_input. Feed constants there. Not applicable to BEVFormer."
+  },
+  {
+   "name": "CoIn3D data pipeline PrepareNVSMetaData / PrepareNVSMetaDataMix / NuscenesCameraGroups",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:1281-2366",
+    "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:2370-3008",
+    "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:3026-3516"
+   ],
+   "role": "Chooses raw vs NVS per sample (p_raw 0.5). Samples novel rigs (ego roll/pitch, per-camera xyz/yaw, focal, principal point). Applies focal augmentation to raw images. Projects LiDAR depth into novel views and masks it to foreground 'car' boxes. Builds the test inputs (raw images, real calibration).",
+   "method_specific": true,
+   "port_notes": "Heavily tied to camera names and to nuScenes/Lyft/Waymo conventions. The raw-image focal augmentation (raw_style_augmentation) and mask_fg_depth can be ported without the Gaussian metadata."
+  },
+  {
+   "name": "CoIn3D NovelViewSynthesisHook and Gaussian renderer",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/core/hook/nvs_gs3d.py:12-197",
+    "CoIn3D/BEVDet/mmdet3d/gaussian3d_kernel/gaussian.py",
+    "CoIn3D/BEVDet/mmdet3d/apis/train.py"
+   ],
+   "role": "In before_train_iter, renders the novel views (and depth) for the current and adjacent frames on the GPU with diff-gaussian-rasterization, normalizes them, and writes them into data_batch.",
+   "method_specific": true,
+   "port_notes": "Relies on mmcv runner.data_batch being mutated in place. For BEVFormer, all queue frames must be rendered with the synced rig."
+  },
+  {
+   "name": "diff-gaussian-rasterization (third party)",
+   "files": [
+    "CoIn3D/third_party/diff-gaussian-rasterization/**"
+   ],
+   "role": "CUDA rasterizer, a fork that also outputs depth.",
+   "method_specific": false,
+   "port_notes": "Inria/MPII non-commercial license. Build for sm_89 (CUDA >= 11.8) or for sm_86."
+  },
+  {
+   "name": "CoIn3D offline metadata pipeline",
+   "files": [
+    "CoIn3D/data_preprocess/README.md:104-161",
+    "CoIn3D/data_preprocess/1.1_construct_meshes.py",
+    "CoIn3D/data_preprocess/2.2_get_dense_depth.py",
+    "CoIn3D/data_preprocess/3.2_get_ego_part_mask.py",
+    "CoIn3D/data_preprocess/3.4_inpainted_ego_and_blind_area.py",
+    "CoIn3D/data_preprocess/4_pregen_sample_gaussians.py",
+    "CoIn3D/data_preprocess/5.1_get_lidar_depths.py"
+   ],
+   "role": "Steps: LiDAR sequences + 4D boxes -> TSDF meshes (VDBFusion) -> mesh depth + SPNet completion -> SAM ego masks, texture retrieval, inpainting -> per-sample Gaussian npz (means, rgb, scale, mask, lidar points).",
+   "method_specific": true,
+   "port_notes": "Needs the missing ./devkits caches, SPNet weights and a SAM checkpoint, plus several bug fixes. Storage is about 0.87 TB for nuScenes-size data."
+  },
+  {
+   "name": "CoIn3D cross-dataset evaluation",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/datasets/nuscenes_dataset.py:455-700",
+    "CoIn3D/third_party/nuscenes-devkit/python-sdk/nuscenes/eval/common/loaders.py:52-175",
+    "CoIn3D/BEVDet/tools/test.py:166-177"
+   ],
+   "role": "Class mapping (general_3cls) and the cde_setting GT loading for Lyft and Waymo in nuScenes format. Reports NDS* without velocity or attributes.",
+   "method_specific": false,
+   "port_notes": "Gen2E uses its own evaluation. Only the metric definition (NDS*) matters for comparability."
+  },
+  {
+   "name": "CoIn3D configs",
+   "files": [
+    "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py",
+    "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-caronly.py",
+    "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/mix-general_3cls.py"
+   ],
+   "role": "Hold the prior_config, CDA ranges and training recipe. For nuScenes-only training, the config is selected with --src_dataset nuscenes --src_train_cls general_3cls --exp_tag caronly.",
+   "method_specific": true,
+   "port_notes": "Use nuscenes-general_3cls-caronly.py as the reference recipe for single-source training."
+  }
+ ],
+ "data_requirements": [
+  "UniDrive (train): images and calibration of the single source rig (intrinsics, cam->ego), 3D boxes, and an ego frame with z up and origin on the ground (the warp assumes ground at ego z = -0.1 m). LiDAR is needed only if the base detector uses depth supervision (BEVDepth). Multiple rigs are not needed at training time.",
+  "UniDrive (test): only the calibration of each target rig, used to warp its images into the same virtual rig. No target images or labels are used for adaptation.",
+  "UniDrive (optional CMA-ES, paper Sec. 3.4): calibrations of all rigs that should share the model (the paper sums the error over S rigs, presumably including the test rigs) plus a set of 3D boxes. No optimizer code or optimized parameters are released.",
+  "UniDrive original benchmark data: CARLA 0.9.10, 8 rigs, 1600x900, nuScenes format, 6 classes (car, truck, bus, bicycle, motorcycle, pedestrian). The README says it is hosted on OpenDataLab but gives no link.",
+  "CoIn3D SFM (train and test): per-camera K and cam->ego plus the image augmentation matrix. The ego origin must be on the ground plane (z=0), which the supplement states for nuScenes, Lyft and Waymo.",
+  "CoIn3D CDA (train only): full LiDAR sequences (all sweeps per scene), ego poses, tracked 3D boxes with instance IDs (4D annotations), images and calibration. These feed TSDF meshes (VDBFusion), PyTorch3D depth rendering, SPNet depth completion (weights not provided), SAM ego-part masks, optional ZITS++ inpainting, and per-sample Gaussian npz files.",
+  "CoIn3D storage (ModelScope listing for nuScenes): gaussians about 551 GB, inpainted 127 GB, depths 64 GB, objs_model 61 GB, meshes 50 GB, masks 16 GB, i.e. about 0.87 TB of metadata, plus 55 GB of images downsampled to width 800. Training reads about 16 MB of Gaussians per sample per frame every iteration.",
+  "CoIn3D info pkls must contain per-camera img_h/img_w, cam_intrinsic, sensor2ego_*, ego2global_*, *_unsync keys (timestamp sync), ann_infos (ego-frame boxes and labels), T_local2egos, instance_tokens, scene_token and lidar_path. The generator scripts are not released (BEVDet's create_data_bevdet.py was removed; the Lyft/Waymo converters are marked TODO).",
+  "CoIn3D does not need multiple rigs at training time (novel rigs are sampled around the source). The novel-rig ranges (tz 1.5-2.2 m absolute, focal 385-770 px) and the optional tgt_cam_cfg_file can encode knowledge of the target rigs."
+ ],
+ "rig_assumptions": [
+  {
+   "assumption": "Exactly the 6 nuScenes camera names, and one virtual camera per real camera slot keyed by name",
+   "location": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:209-216; UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:253-289,394-403",
+   "impact": "Rigs with a different camera count or names (R1-c10, R2-R9) raise KeyError or misassign cameras. The real camera count N must be decoupled from the virtual count K."
+  },
+  {
+   "assumption": "Fixed virtual rig: 6 co-located cameras at ego (0,0,1.5), yaw 0/+-60/+-120/180, zero pitch/roll, K fx=fy=1385.64, cx=800, cy=450 (60 deg HFoV at 1600x900)",
+   "location": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:253-289,363-392,424-442",
+   "impact": "This is the paper's un-optimized 'intuitive' rig. The optimized rig behind the headline numbers is not released. Virtual height and FoV may not suit R1, and regions not covered by a target rig are black."
+  },
+  {
+   "assumption": "Virtual LiDAR pose hard-coded to t=(0,0,1.5), q=(0.707,0,0,-0.707) and used for camera2lidar/lidar2camera instead of the dataset's lidar2ego",
+   "location": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:291-302,405-420",
+   "impact": "BEV features are offset from the GT (which is in the real LiDAR frame) unless the real LiDAR is exactly at that pose. For nuScenes LIDAR_TOP (about x=0.94, z=1.84) this would be wrong. A port must use the real lidar2ego."
+  },
+  {
+   "assumption": "Ground plane at ego z = -0.1 m (camera_height = virtual z + 0.1) with gravity-aligned virtual cameras",
+   "location": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:40-51",
+   "impact": "Requires the ego origin on the ground with z up. Ego pitch, roads with slope, or a LiDAR-centered ego frame break the warp."
+  },
+  {
+   "assumption": "Row threshold v>500 px for 'ground', and a constant-depth plane Z=50 m above it",
+   "location": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:37,41,52-62,139",
+   "impact": "Only valid for a 900-px-high virtual image with cy=450. Must be recomputed (or replaced by the paper's D^<D0 rule) if the virtual resolution or K changes."
+  },
+  {
+   "assumption": "Output virtual image size 900x1600, pinhole cameras with no distortion, nearest sampling, last camera in the list overwrites overlaps",
+   "location": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:78-93,102,106-150",
+   "impact": "Results depend on the order of cam_types; seams appear in overlaps; there is no distortion model for fisheye or wide-FoV rigs."
+  },
+  {
+   "assumption": "CARLA training rigs: LIDAR_TOP at (0,0,GLOBAL_HEIGHT_POS=1.8) with yaw -90, cameras at z 1.5-1.6 m with zero roll/pitch",
+   "location": "UniDrive/create/nus_tool/position_3d.py:358-368; UniDrive/create/carla_nus/hyperparams/*.toml",
+   "impact": "UniDrive was never tested with camera pitch/roll variation. The 1.8 m LiDAR height in the TOMLs differs from the 1.5 m virtual LiDAR, a possible 0.3 m z offset (position_3d_camera.py:22 uses 1.50). It is unknown which script produced the released data."
+  },
+  {
+   "assumption": "Ground plane = ego z=0 (ego origin at the rear axle projected to the ground); ground depth clipped at 60 m",
+   "location": "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:136-160; CoIn3D supplement Sec. 1",
+   "impact": "The ground-depth and ground-gradient priors are wrong if the R1-R9 ego frames are not ground-anchored. The ground height would need to be supplied."
+  },
+  {
+   "assumption": "Prior normalization constants (focal/500 squared, ground depth/25, gradient/2) tuned for about 704-px-wide inputs",
+   "location": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:58-60; CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:171-181,252-270",
+   "impact": "BEVFormer-small at 1280x720 has focal lengths about 1.8x larger in pixels, so the constants (and aug_K) should be rescaled."
+  },
+  {
+   "assumption": "Train-time Pluecker front-back flip uses a fixed 180 deg yaw about a point 0.8 m ahead of the ego origin ([1.6,0,0])",
+   "location": "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:190-196",
+   "impact": "The vehicle geometry is specific to nuScenes-like cars and should be re-derived for R1."
+  },
+  {
+   "assumption": "Images are resized to width 704 and cropped from the bottom to 384 rows (the top is cut)",
+   "location": "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:1556-1562,2173-2176",
+   "impact": "For other aspect ratios or pitched cameras, the crop removes a different part of the vertical field of view."
+  },
+  {
+   "assumption": "Absolute novel-rig sampling ranges: tz U(1.5,2.2) m, focal U(385,770) px at 704 width, yaw +-20 deg, tx/ty +-0.2 m, ego roll/pitch +-2 deg, no per-camera roll/pitch",
+   "location": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:251-255; CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:2306-2317,3231-3330",
+   "impact": "Chosen to span nuScenes-to-Waymo heights and focal lengths, which is arguably target-informed. They must be re-chosen for R1. Large pitch changes (R1-r?) are not covered."
+  },
+  {
+   "assumption": "Logic based on camera names: LEFT/RIGHT swap on flip, BACK/SIDE and BACK->FRONT mapping for target rigs, Waymo CAM_SIDE_* constraints",
+   "location": "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:1567-1571,1648-1675,1927-1941,3271-3278",
+   "impact": "Rigs whose cameras have other names need edits."
+  },
+  {
+   "assumption": "Dataset-specific switches: 'nuscenes' substring in meta_data_root changes the box convention; Waymo scene IDs '0001','0340','0633' are forced to raw",
+   "location": "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:2107,2293",
+   "impact": "Silent behaviour change for new datasets, depending on the path name."
+  },
+  {
+   "assumption": "Foreground depth supervision only for class 0 ('car')",
+   "location": "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py:2078-2083",
+   "impact": "Multi-class Gen2E training needs an extension (the Mix subclass uses classes <= 2)."
+  },
+  {
+   "assumption": "LiDAR file layout: 5 float32 values per point for nuScenes/Lyft, 6 for Waymo",
+   "location": "CoIn3D/data_preprocess/4_pregen_sample_gaussians.py:281-284; CoIn3D/data_preprocess/1.1_construct_meshes.py (LIDAR_FEAT)",
+   "impact": "The R1 LiDAR format must be adapted."
+  },
+  {
+   "assumption": "GPU device = cuda:{global rank}",
+   "location": "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py:95-98; CoIn3D/BEVDet/mmdet3d/core/hook/nvs_gs3d.py:33-35",
+   "impact": "Assumes a single node. This is fine on the 4x4090 box."
+  }
+ ],
+ "port_plan": [
+  {
+   "target": "UniDrive -> BEVDepth (forward view transform)",
+   "steps": [
+    "Write a standalone projector module without numba: inputs are real K_j, T_cam_j->ego and image sizes, plus a virtual rig spec. Parameters: ground height (code default -0.1 m), switch rule (code: v>500 px; paper: D^<D0), D0=50 m, surface (plane Z=D0 vs sphere), blending (overwrite vs weighted). Output a per-virtual-view lookup table (source camera index, map_x, map_y, valid), computed once per rig and cached (the mapping is independent of image content).",
+    "In the BEVDepth data pipeline, warp right after image loading (before resize/crop/flip/rotate augmentation) using cv2.remap with bilinear interpolation. Replace intrinsics and sensor2ego (and sensor2keyego for adjacent frames) with the virtual ones. Keep ego2global, and use the dataset's real lidar2ego everywhere.",
+    "Set the virtual camera count to 6 independent of the real count, so that R1-c6, R1-c10 and R2-R9 all produce 6 virtual views. Set Ncams=6 in the config.",
+    "Depth GT: by default project LiDAR into the virtual cameras with BEVDepth's existing point-to-depth code using the virtual K/T. Switch per the user's decision (warped real-camera depth, or no depth loss).",
+    "Virtual rig: either reproduce the code default (6x60 deg, 1600x900, (0,0,1.5)), re-centered to R1's camera height if the user agrees, or implement the paper's CMA-ES (pip 'cmaes') minimizing Eq. 6 on R1 training boxes over the chosen set of rig calibrations.",
+    "Test: build one lookup table per test rig (R1-c6/c10/f/r/t, R2-R9) and reuse the same virtual rig and weights.",
+    "Sanity checks: project GT boxes into the virtual views; visualize uncovered (black) regions per rig; compare R1->R1 raw vs UniDrive, where a small or no drop is expected (paper +4.9 mAP on BEVFusion-C). Compare against the CoIn3D supplement's UniDrive-on-BEVDepth numbers (N->L 0.440, N->W 0.298 NDS*)."
+   ],
+   "effort": "M",
+   "risks": [
+    "Objects off the ground are misplaced by parallax between the co-located virtual cameras and the real cameras, so the warped content does not match LiDAR depth labels.",
+    "Rigs with less total FoV, or without rear coverage, leave virtual views partly black. The owner suggests dropping uncovered virtual cameras (issue #10).",
+    "Numbers may fall short of the paper because the optimized virtual rig is not released.",
+    "Mismatch with ImageNet/pretrained statistics because of warp artifacts and seams.",
+    "Per-sample warping on the CPU without lookup-table caching (as the released code does with 36 kernel launches per sample) would slow the dataloader."
+   ]
+  },
+  {
+   "target": "UniDrive -> BEVFormer-small (backward view transform)",
+   "steps": [
+    "Reuse the same lookup-table projector.",
+    "In the BEVFormer pipeline, warp right after LoadMultiViewImageFromFiles and before RandomScaleImageMultiViewImage(0.8). Rewrite img_metas: lidar2img = K_v * T_ego->vcam * T_lidar->ego (real lidar2ego), plus cam_intrinsic, lidar2cam and img_shape.",
+    "Set num_cams=6 virtual. cams_embeds then stays tied to the virtual slots for every rig.",
+    "Warp every frame in the temporal queue (queue_length=3) with the same rig lookup table. can_bus and ego motion are unchanged.",
+    "Run in the existing 'bevformer' env (torch 1.9.1, mmcv-full 1.4.0, mmdet3d 0.17.1) with a numpy/cv2 warp, so no numba or CUDA is needed in workers.",
+    "Test with one lookup table per target rig, and run the same sanity checks as for BEVDepth."
+   ],
+   "effort": "M",
+   "risks": [
+    "Same warp-geometry and coverage issues as the BEVDepth port.",
+    "The FCOS3D-pretrained R101-DCN was trained on real images. Warped images at 1600x900 and 60 deg FoV differ from R1's native FoV and resolution.",
+    "1600x900 virtual images may upsample narrow-FoV or low-resolution rigs and downsample others, so detection range and resolution change per rig."
+   ]
+  },
+  {
+   "target": "CoIn3D SFM (+ raw-image focal augmentation) -> BEVDepth",
+   "steps": [
+    "Confirm the Gen2E BEVDepth codebase. If it is BEVDet-dev3.0 BEVDepth4D, port the diff hunks directly: prior_utils.py, bevdet.py lines 52-127/395/442-447/543-569, view_transformer.py block_cam_aware, centerpoint_head.py velocity switch, and the config's prior_config. If it is Megvii BEVDepth, re-implement the same hooks in its image backbone, neck and DepthNet (set mlp_input to ones).",
+    "Port PriorMapGenerator on BEVDepth's (sensor2ego, intrin, ida_mat) tensors. Check the R1-R9 ego convention (ground at z=0). Choose plucker_moment_origin. Rescale the normalization constants if the input width differs from 704.",
+    "Encoder surgery: widen conv1 from 3 to 12 channels after pretrained weights load; add PM layers after C4, after C5 and after the neck; grow FPN and DepthNet in_channels by 9.",
+    "Disable the camera-aware SE (block_cam_aware=True), as in the paper (Table 3).",
+    "Port raw_style_augmentation (aug_K_on_raw ratio 0.94-1.4: crop-zoom about the principal point with K update, plus rotation +-5.4 deg). This is 'F-Aug' in paper Table 5.",
+    "Depth loss: decide whether to keep the fg-only ('car') mask that CoIn3D uses in every config, or full LiDAR depth.",
+    "Recipe: 24 epochs, AdamW 2e-4, EMA, BDA. Decide whether to keep velocity (CoIn3D drops it).",
+    "Test: raw target images, priors from the target calibration, per-target input-size config, align_after_view_transformation for 4D."
+   ],
+   "effort": "L",
+   "risks": [
+    "Without NVS-CDA the expected gain is smaller: N->W NDS* 0.418 (SFM+F-Aug) vs 0.513 (full), per the paper.",
+    "Load order for the widened conv1 vs pretrained weights or a resumed checkpoint.",
+    "Differences between BEVDet and Megvii BEVDepth (single frame vs 4D, depth bins, CBGS) affect comparability with the other baselines.",
+    "The CoIn3D code has no license, so copying files verbatim into a public repo is legally unclear."
+   ]
+  },
+  {
+   "target": "CoIn3D SFM (+ raw-image focal augmentation) -> BEVFormer-small",
+   "steps": [
+    "No official implementation exists (the paper used BEVFormer-tiny at 800 px width without details). Define the integration: priors concatenated at the input (widen R101-DCN conv1 from 3 to 12 channels after loading FCOS3D r101 weights from load_from, which needs a custom init hook), modulation at C5 (2048 ch, stride 32) and at the single-level FPN output (256 ch).",
+    "Add K and cam2ego per camera to img_metas (BEVFormer only carries lidar2img, lidar2cam and cam_intrinsic). Fold the 0.8 rescale and the /32 padding into the image-augmentation matrix. Compute ground depth in the ego frame, not the LiDAR frame.",
+    "Handle the 256+9 channels after the neck: either a 1x1 conv back to 256 or no concat after the neck (decision).",
+    "Decide whether to keep cams_embeds (per-index) or disable it (use_cams_embeds=False), since the Pluecker maps encode camera identity.",
+    "Port raw focal augmentation with lidar2img updates. Compute priors per queue frame from that frame's calibration.",
+    "Rescale the focal normalization (500) and the augmentation focal ranges for 1280x720 inputs."
+   ],
+   "effort": "L",
+   "risks": [
+    "Many design choices are unspecified (paper vs code), so results may not reflect the authors' BEVFormer numbers.",
+    "Conflict between FCOS3D-pretrained conv1 and the widened input.",
+    "BEVFormer-small differs from the paper's BEVFormer-tiny (backbone, resolution, BEV 150x150).",
+    "Changing the camera count at test time interacts with cams_embeds."
+   ]
+  },
+  {
+   "target": "CoIn3D CDA (ego-centric Gaussian novel-view synthesis) for R1, shared by both ports",
+   "steps": [
+    "Verify that R1 provides full LiDAR sequences, ego poses, tracked 3D boxes (instance IDs) and per-camera timestamps. Write a converter to CoIn3D's info format (cams[*].img_h/img_w/cam_intrinsic/sensor2ego_*/ego2global_*/*_unsync, ann_infos ego-frame boxes, T_local2egos, instance_tokens, lidar_path, scene_token).",
+    "Recreate the missing ./devkits caches (sample_mminfo_ssd, *_scene_samples.pkl, mm_scene_objs). Fix the 'nuscene' typo at 4_pregen_sample_gaussians.py:281. Obtain SPNet weights (path hard-coded at 2.2_get_dense_depth.py:43) and remove the missing G2_MonoDepth import. Obtain a SAM checkpoint.",
+    "Run steps 1.1 -> 5.1 in a new environment (open3d, trimesh, vdbfusion, pymeshfix, pytorch3d, segment_anything; optionally ZITS++). Budget about 0.9 TB per nuScenes-size dataset and place it on storage with space (local / has 323 GB free; the NAS has 3.2 TB but is NFS).",
+    "Create the CoIn3D env (torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0) or adapt the code to the Gen2E env. Build diff-gaussian-rasterization for sm_89 (CUDA 11.8) or sm_86 (CUDA 11.6).",
+    "Port PrepareNVSMetaData and NovelViewSynthesisHook into each training loop. Render the current frame plus adjacent frames (BEVDepth4D) or queue frames (BEVFormer) with the synced novel rig. Re-project LiDAR depth into the novel views.",
+    "Choose the novel-rig ranges for R1 (decision) and validate renders visually: raw vs NVS, height +-1 m, focal extremes."
+   ],
+   "effort": "XL",
+   "risks": [
+    "Storage and I/O: about 16 MB per sample-frame read every iteration; padding to 4M points means about 144 MB per frame in dataloader memory (fits in 376 GB RAM and 189 GB /dev/shm).",
+    "Weeks of preprocessing, many undocumented steps, and released scripts that do not run as-is (missing caches, typos, debug imports, absolute paths).",
+    "Not feasible if R1 lacks LiDAR sequences or tracked boxes, or if R1 is synthetic with a different sensor setup.",
+    "Licensing: the CoIn3D code has no license and the rasterizer is non-commercial, which matters for a public GitHub release."
+   ]
+  }
+ ],
+ "open_questions": [
+  "Which BEVDepth implementation is the shared Gen2E base: Megvii official BEVDepth, BEVDet dev3.0 'BEVDepth4D' (what CoIn3D uses: R50, 384x704, 1 adjacent frame, 24 epochs, no CBGS), or another? Single-frame or temporal? And is BEVFormer-small the official fundamentalvision config (R101-DCN, 0.8 scale = 1280x720, BEV 150x150, queue 3, FCOS3D init)?",
+  "Is R1 real or simulated (e.g. CARLA)? Does it provide full LiDAR sequences, ego poses and tracked box IDs, which CoIn3D's CDA requires? Is the ego origin on the ground with z up? Both UniDrive's warp and CoIn3D's ground priors assume this.",
+  "UniDrive virtual rig: (a) reproduce the released code's 'intuitive' rig (6x60 deg, 1600x900, all at (0,0,1.5)), which corresponds to the paper's 'w/o optimization'; (b) run CMA-ES with R1 calibration only; or (c) run CMA-ES over all rig calibrations (R1 variants + R2-R9) as the paper does? Option (c) uses test-rig calibration but no test images. Should the virtual height, FoV and resolution be re-tuned to R1?",
+  "UniDrive geometry: follow the code (row split v>500, plane Z=50 m, ground at -0.1 m, nearest sampling, overwrite) or the paper (switch when distance < D0=50 m, sphere of radius D0, weighted blending)?",
+  "UniDrive on BEVDepth: which depth GT? (a) LiDAR projected into the virtual cameras (geometrically correct, but content off the ground is misaligned), (b) real-camera depth warped with the same lookup table, or (c) no depth loss?",
+  "CoIn3D CDA scope: full Gaussian NVS (needs LiDAR sequences + 4D boxes, about 0.9 TB of metadata per nuScenes-size dataset, a weeks-long preprocessing toolchain) or only SFM + raw focal augmentation? The paper's ablation for the latter is NDS* 0.418 vs 0.513 on N->W. If full: on which storage?",
+  "CoIn3D augmentation ranges: keep the paper/code defaults (focal 0.7-1.4x or 385-770 px at 704 width, tz 1.5-2.2 m absolute, yaw +-20 deg, ego roll/pitch +-2 deg, tx/ty +-0.2 m, p_raw 0.5)? These were chosen to span nuScenes-to-Waymo, which is target-informed. Or derive them only from R1 without knowledge of R2-R9 and the R1 variants? Should the optional target-rig rendering (tgt_cam_cfg_file) stay off?",
+  "CoIn3D recipe options: keep fg-only ('car' 2D boxes) depth supervision? Keep the velocity head removed? Car-only (as in the paper) or the Gen2E class set? plucker_moment_origin 'cam_in_ego' (paper Eq. 4) or 'ego_in_cam' (released car-only configs)? Keep BEVDepth's camera-aware SE disabled?",
+  "CoIn3D on BEVFormer-small (no official code): (a) 1x1 conv back to 256 channels vs no prior concat after the neck; (b) how to widen conv1 given FCOS3D-pretrained weights; (c) keep or drop cams_embeds; (d) render NVS for all queue frames?",
+  "Camera-count variants (R1-c6/c10, rigs with other than 6 cameras): UniDrive naturally maps to 6 virtual cameras. For the CoIn3D/BEVFormer baseline, how should a changing camera count be handled given BEVFormer's per-index cams_embeds?",
+  "GitHub release licensing: CoIn3D's own code (prior_utils.py, nvs_gs3d.py, PrepareNVSMetaData, data_preprocess) has no license. Ask the authors, or do a clean-room re-implementation with citation? diff-gaussian-rasterization is Inria non-commercial. UniDrive is MIT and its BEVFusion copy is Apache-2.0: is vendoring with attribution acceptable?",
+  "Metric for the Gen2E table: NDS* (CoIn3D/UDGA style, without mAVE/mAAE) or the standard nuScenes NDS? This decides whether the velocity head is needed in the CoIn3D/BEVDepth port."
+ ],
+ "bugs_or_gaps": [
+  "UniDrive: the documented run path (detection_methods/bevfusion, assets/DATA_PREPARE.md) does NOT contain the UniDrive projection. The method exists only in project/mmdet3d/datasets/pipelines/loading.py and project/mmdet3d/datasets/nuscenes_dataset.py.",
+  "UniDrive: there is no CMA-ES optimizer, and the optimized virtual-rig parameters are not released (issue #7: 'We directly use the cmaes python library'). The hard-coded rig is the paper's un-optimized 'intuitive' roof-center rig (Fig. 5(b)); the paper's Table 2 matches the optimized Fig. 5(c).",
+  "UniDrive: paper/code mismatches. Eq. 1 is missing 1/fx (issue #5). The paper uses a D^<D0 switch and a sphere of radius D0; the code uses row v>500 and the plane Z=50 (loading.py:37,41,52-56,139). The paper blends with weights (Eq. 3); the code overwrites, and its weight normalization is commented out (loading.py:152-157).",
+  "UniDrive: the neighbour filter is a no-op. `if original_cam_name in camera_relations[original_cam_name]` (loading.py:107) is always true; it should index by new_cam_name. As a result every real camera writes, and the last one in cam_types order wins.",
+  "UniDrive: the virtual LiDAR pose is hard-coded (nuscenes_dataset.py:291-302) and used for camera2lidar (405-420) instead of info['lidar2ego_*']. Possible 0.3 m z mismatch with the CARLA labels, whose LIDAR_TOP sits at GLOBAL_HEIGHT_POS=1.8 (create/nus_tool/position_3d.py:358-368) vs 1.5.",
+  "UniDrive: eval_version='detection_carla' (project/mmdet3d/datasets/nuscenes_dataset.py:144), but extra/nuscenes/eval/detection/configs/ contains only detection_cvpr_2019.json, so config_factory asserts at dataset init.",
+  "UniDrive: create/carla_nus/hyperparams/det_6x70.toml:15 has 'channels = [32.0' without a closing bracket (TOML parse error confirmed with tomllib).",
+  "UniDrive: assets/INSTALL.md and assets/GET_STARTED.md are 1-byte files. 12 precompiled cpython-38 .so files are committed under project/mmdet3d/ops (untrusted; rebuild). setup.py builds only up to sm_86 (project/setup.py:22-25).",
+  "UniDrive: numba CUDA in the dataloader requires the 'spawn' start method (project/tools/train.py:98, test.py:231). Each sample does 36 kernel launches with fresh host->device copies, which is slow.",
+  "CoIn3D: only BEVDepth4D (BEVDet dev3.0) is released. The BEVFormer and PETR integrations reported in the paper (Table 2) are absent.",
+  "CoIn3D: the info-pkl generators (*_sync+raw.pkl with *_unsync keys, img_h/img_w, T_local2egos, instance_tokens) and the Lyft/Waymo->nuScenes converters are not released. BEVDet's tools/create_data_bevdet.py and tools/data_converter were removed.",
+  "CoIn3D: data_preprocess depends on ./devkits/... caches that no released script produces (4_pregen_sample_gaussians.py:140,306; 3.6_inpainted_obj_depth.py:102,112,210).",
+  "CoIn3D: 2.2_get_dense_depth.py imports G2_MonoDepth, which is not in the repo (line 16), and hard-codes the SPNet weights path /data1/znkwong/.../Large_300.pth (line 43). The weights are not provided.",
+  "CoIn3D: 4_pregen_sample_gaussians.py:281 checks `dataset in ['nuscene', 'lyft']` (typo), so for nuScenes lidar_pts is undefined (NameError at line 285). The README calls the step 4_construct_gaussians.py, but the file is 4_pregen_sample_gaussians.py. 1.1_construct_meshes.py imports ipdb.",
+  "CoIn3D: gen_raw_cam_for_gaussian_with_focalaug has a 'range' branch bug. `elif aug_cfg == 'range'` compares a list with a str, and fus[i] is read before it is set (loading.py:3207-3211). It is unused by the released configs, which use 'ratio'.",
+  "CoIn3D: PrepareNVSMetaData.mask_fg_depth raises NotImplementedError unless fg_depth_only == 'car' (loading.py:2081-2082). So nuscenes-general_3cls.py, lyft-general_3cls.py and waymo-general_3cls.py (fg_depth_only=True with PrepareNVSMetaData) would crash; only the Mix subclass handles 3 classes.",
+  "CoIn3D: mix-general_3cls.py:343 uses the absolute ann_file path /data1/znkwong/Cross-Cam-Config-Generalization/...",
+  "CoIn3D: the released single-dataset car-only configs leave plucker_moment_origin at its default 'ego_in_cam' (prior_utils.py:206-208), which crosses a camera-frame vector with ego-rotated rays. This differs from paper Eq. 4 (m = t x d); only the *general_3cls.py configs set 'cam_in_ego'.",
+  "CoIn3D: paper/code differences in the augmentation. The paper gives a focal ratio 0.7-1.4; the nuScenes configs use an absolute 385-770 px. The paper applies per-camera roll/pitch +-2 deg; the code applies it to the ego. The paper's background radius spans 0-10 m; the config has [0.02, 0.001, 5].",
+  "CoIn3D: raw_style_augmentation hard-codes the nuScenes width 1600 in its resize formula (loading.py:1995). This only matters when aug_K_on_raw is None.",
+  "CoIn3D: there is no LICENSE file for the CoIn3D code (none on the GitHub sidebar either). Only BEVDet/LICENSE (Apache-2.0) and third-party licenses exist, including Inria non-commercial for the rasterizer.",
+  "CoIn3D: BEVDet/mmdet3d/datasets/ was missing from the repo until 2026-07-08 (commit b53019d 'Add missing dataset files'). Branch 'main' still contains only the README."
+ ],
+ "config_facts": [
+  {
+   "key": "UniDrive.virtual_rig.num_cams",
+   "value": "6 (one per nuScenes camera name)",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:253-289"
+  },
+  {
+   "key": "UniDrive.virtual_rig.translation",
+   "value": "(0.0, 0.0, 1.5) m in ego for all 6 cameras (co-located)",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:363-392"
+  },
+  {
+   "key": "UniDrive.virtual_rig.yaw",
+   "value": "FRONT 0, FRONT_RIGHT -60, FRONT_LEFT +60, BACK 180, BACK_LEFT +120, BACK_RIGHT -120 deg; zero pitch/roll (decoded from quaternions)",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:253-289"
+  },
+  {
+   "key": "UniDrive.virtual_rig.K",
+   "value": "fx=fy=1385.64, cx=800, cy=450, i.e. 60 deg HFoV at 1600x900 (a 70 deg variant 1142.52 is commented out)",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:424-459"
+  },
+  {
+   "key": "UniDrive.virtual_lidar",
+   "value": "t=(0,0,1.5), q(wxyz)=(0.707,0,0,-0.707)",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:291-302"
+  },
+  {
+   "key": "UniDrive.D0",
+   "value": "50 m (constant-depth plane Z=50)",
+   "source": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:139 (confirmed by owner in issue #3)"
+  },
+  {
+   "key": "UniDrive.ground_rule",
+   "value": "rows v>500 use the ground plane at camera_height = z_virtual + 0.1",
+   "source": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:37-51"
+  },
+  {
+   "key": "UniDrive.output_size",
+   "value": "900x1600",
+   "source": "UniDrive/project/mmdet3d/datasets/pipelines/loading.py:102"
+  },
+  {
+   "key": "UniDrive.detector",
+   "value": "BEVFusion-C: Swin-T + GeneralizedLSSFPN + LSSTransform (dbound 1-60 m, step 1) + CenterHead, image 256x704, samples_per_gpu 4",
+   "source": "UniDrive/project/configs/nuscenes/det/centerhead/lssfpn/camera/256x704/swint/default.yaml; .../lssfpn/camera/default.yaml"
+  },
+  {
+   "key": "UniDrive.classes",
+   "value": "car, truck, bus, bicycle, motorcycle, pedestrian",
+   "source": "UniDrive/project/mmdet3d/datasets/nuscenes_dataset.py:118-129"
+  },
+  {
+   "key": "UniDrive.env",
+   "value": "python 3.8, torch 1.10.1 + cudatoolkit 11.3, mmcv/mmcv-full 1.4.0, mmdet 2.20.0, numba 0.48.0, torchpack, mpi4py 3.0.3",
+   "source": "UniDrive/project/docker/Dockerfile:15-23"
+  },
+  {
+   "key": "UniDrive.upstream",
+   "value": "mit-han-lab/bevfusion f39a4a0 (2022-09-26)",
+   "source": "blob-hash match of vtransforms/base.py, fusion_models/bevfusion.py and pipelines/formating.py; diff -rq vs upstream checkout"
+  },
+  {
+   "key": "CoIn3D.INPUT_SIZE / MAX_PTS",
+   "value": "(384, 704) / 4,000,000 Gaussians per frame",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:1-2"
+  },
+  {
+   "key": "CoIn3D.prior_config.map2use",
+   "value": "inv_focal, ground_depth, gd_grad, plucker_ray, plucker_moment (9 channels)",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:47,72-85"
+  },
+  {
+   "key": "CoIn3D.prior_config.injection",
+   "value": "feat2modulate after_backbone=True, after_neck=True; feat2cat img_input=True, after_backbone=True, after_neck=True; feat_modulate PM_InvFMul_GDGGPRAdd",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:48-70"
+  },
+  {
+   "key": "CoIn3D.prior_config.norm",
+   "value": "depth_norm_factor 25, focal_norm_factor 500, square_focal True, plucker_normed False, plucker_fb_flip True, use_unpert_ego False",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:58-66"
+  },
+  {
+   "key": "CoIn3D.model",
+   "value": "BEVDepth4D, ResNet50 out_indices (2,3), CustomFPN 512, LSSViewTransformerBEVDepth depth [1,60,0.5] downsample 16, numC_Trans 80, 1 adjacent frame, block_cam_aware=True, CenterHead without velocity (code_size 7)",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:89-210"
+  },
+  {
+   "key": "CoIn3D.CDA",
+   "value": "p_raw 0.5; aug_ego2global [2,2,0] deg; aug_cam2ego [+-0.2 m, +-0.2 m, tz range(1.5,2.2) m, 0, 0, +-20 deg]; aug_K range 385-770 px at 704 width; aug_K_on_raw ratio 0.94-1.4; use_lidar_depth True; fg_depth_only 'car'; nvs_wo_cam_sync True; sync_adj_aug True",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:224-262"
+  },
+  {
+   "key": "CoIn3D.gaussian_radii",
+   "value": "fg 0.0025, obj 0.005, inpaint 0.001, bg [0.02, 0.001, 5]; opacity 1; isotropic",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:229-236; CoIn3D/BEVDet/mmdet3d/core/hook/nvs_gs3d.py:46-50"
+  },
+  {
+   "key": "CoIn3D.training",
+   "value": "AdamW lr 2e-4 wd 1e-2, grad clip 5, 24 epochs, samples_per_gpu 8 (4 GPUs in the paper), MEGVIIEMAHook, SequentialControlHook temporal_start_epoch 2, NovelViewSynthesisHook, BDA rot +-22.5 deg / scale 0.95-1.05 / flips 0.5",
+   "source": "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-general_3cls-caronly.py:217-222,341,363-391"
+  },
+  {
+   "key": "CoIn3D.mmdet3d_version",
+   "value": "1.0.0rc4 (BEVDet dev3.0 fork)",
+   "source": "CoIn3D/BEVDet/mmdet3d/version.py:3"
+  },
+  {
+   "key": "CoIn3D.env",
+   "value": "python 3.8.5, torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmsegmentation 0.30.0, editable BEVDet, editable custom nuscenes-devkit, editable diff-gaussian-rasterization, einops/jaxtyping/omegaconf/spconv",
+   "source": "CoIn3D/README.md (Environment section)"
+  },
+  {
+   "key": "CoIn3D.checkpoints",
+   "value": "mix.pth, nuscenes.pth (car only; 303,826,447 bytes, verified), waymo.pth, lyft.pth on ModelScope znkwong/CoIn3D_Data",
+   "source": "CoIn3D/README.md; HTTP HEAD on the modelscope.cn resolve URL"
+  },
+  {
+   "key": "CoIn3D.nuScenes_metadata_size",
+   "value": "gaussians about 551 GB (12 tar shards), inpainted 127.3 GB, depths 64.3 GB, objs_model 61.2 GB, meshes 49.6 GB, masks 16.4 GB, samples 55.4 GB",
+   "source": "modelscope.cn/api/v1/datasets/znkwong/CoIn3D_Data/repo/tree listing"
+  },
+  {
+   "key": "CoIn3D.paper_base_models",
+   "value": "BEVDepth-R50 (width 704), BEVFormer-tiny (width 800), PETR-vov (width 800); 4x RTX 4090",
+   "source": "CoIn3D CVPR paper Sec. 5.1 (Implementation Details)"
+  },
+  {
+   "key": "BEVFormer-small (reference for porting)",
+   "value": "R101-DCN out_indices (3,), FPN 1 level, BEV 150x150, queue_length 3, RandomScaleImageMultiViewImage 0.8, load_from FCOS3D r101",
+   "source": "https://raw.githubusercontent.com/fundamentalvision/BEVFormer/master/projects/configs/bevformer/bevformer_small.py:41-68,182,260"
+  }
+ ],
+ "environment": "UniDrive: BEVFusion's vendored mmdet3d fork (snapshot of mit-han-lab/bevfusion f39a4a0; no version file). Dockerfile: CUDA 11.3, python 3.8, torch 1.10.1, mmcv/mmcv-full 1.4.0, mmdet 2.20.0, numba 0.48.0, torchpack, mpi4py 3.0.3. Use the bundled devkit in extra/ instead of the official nuscenes-devkit. CUDA ops are built for sm_70-86 only, and the repo commits untrusted precompiled cpython-38 .so files.\n\nCoIn3D: BEVDet dev3.0 fork, mmdet3d 1.0.0rc4. python 3.8.5, torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0. Also needs the editable custom nuscenes-devkit, the editable diff-gaussian-rasterization CUDA extension, einops, jaxtyping, omegaconf and spconv. Preprocessing additionally needs open3d, trimesh, vdbfusion, pymeshfix, pytorch3d, segment_anything, optionally ZITS++ requirements, SPNet weights and a SAM checkpoint.\n\nThis machine (checked read-only via importlib.metadata, nothing installed):\n- Envs bevformer and open-mmlab: python 3.8.20, torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0, mmdet3d 0.17.1, mmseg 0.14.1, numba 0.48.0, nuscenes-devkit 1.0.9 / 1.1.10. These suit BEVFormer-small and a cv2/numpy UniDrive warp.\n- Env tcar_bevdet: torch 1.10.0+cu113, mmcv-full 1.5.3, mmdet 2.25.1, mmseg 0.25.0, numba 0.53.0, no mmdet3d installed.\n- No env matches CoIn3D's stack. None has diff_gaussian_rasterization, cmaes, vdbfusion, pytorch3d or segment_anything.\n- For sm_89 (RTX 4090), build the rasterizer with /usr/local/cuda-11.8 for native sm_89, or with cuda-11.6 for sm_86 (binary-compatible on 8.9).\n- Disk free: / 323 GB, /data2 541 GB, /data4 133 GB, /nas/* 3.2 TB (NFS). CoIn3D-scale metadata (about 0.87 TB per nuScenes-size dataset) does not fit on local free NVMe.\n- RAM 376 GB, /dev/shm 189 GB, 64 cores, 4x RTX 4090 24 GB. CoIn3D's paper also trained on 4x RTX 4090.",
+ "license": "UniDrive is MIT: top-level LICENSE 'Copyright (c) 2024 Ye Li', and the GitHub sidebar shows MIT. Bundled parts carry their own licenses: the BEVFusion copy (detection_methods/bevfusion/LICENSE, and project/ derived from it) is Apache-2.0 with the OpenMMLab header; extra/ (nuscenes-devkit) is Apache-2.0 by Motional; the CARLA scenario_runner copy has no license file (upstream is MIT). Vendoring into a public GitHub port is fine with attribution and license files.\n\nCoIn3D has NO license file for its own code: no top-level LICENSE, and the GitHub sidebar shows none. So prior_utils.py, nvs_gs3d.py, PrepareNVSMetaData and data_preprocess are all-rights-reserved by default. BEVDet/LICENSE (Apache-2.0, inherited from BEVDet/OpenMMLab) covers the BEVDet base. third_party/diff-gaussian-rasterization is under the Inria/MPII Gaussian-Splatting License (non-commercial research and evaluation only). data_preprocess/ZITS-PlusPlus and third_party/nuscenes-devkit are Apache-2.0. For a public port, either ask the authors for a license or write a clean-room re-implementation with citation.",
+ "sources": [
+  "https://arxiv.org/abs/2410.13864",
+  "https://arxiv.org/pdf/2410.13864v2",
+  "https://proceedings.iclr.cc/paper_files/paper/2025/hash/41badd36e935f8a80175e95d8bc6192e-Abstract-Conference.html",
+  "https://iclr.cc/virtual/2025/poster/28636",
+  "https://wzzheng.net/UniDrive",
+  "https://github.com/ywyeli/UniDrive",
+  "https://github.com/ywyeli/UniDrive/blob/master/project/mmdet3d/datasets/pipelines/loading.py",
+  "https://github.com/ywyeli/UniDrive/issues/3",
+  "https://github.com/ywyeli/UniDrive/issues/5",
+  "https://github.com/ywyeli/UniDrive/issues/7",
+  "https://github.com/ywyeli/UniDrive/issues/10",
+  "https://github.com/ywyeli/UniDrive/issues/12",
+  "https://github.com/ywyeli/UniDrive/issues/13",
+  "https://arxiv.org/abs/2603.05042",
+  "https://arxiv.org/html/2603.05042",
+  "https://openaccess.thecvf.com/content/CVPR2026/html/Kuang_CoIn3D_Revisiting_Configuration-Invariant_Multi-Camera_3D_Object_Detection_CVPR_2026_paper.html",
+  "https://openaccess.thecvf.com/content/CVPR2026/papers/Kuang_CoIn3D_Revisiting_Configuration-Invariant_Multi-Camera_3D_Object_Detection_CVPR_2026_paper.pdf",
+  "https://openaccess.thecvf.com/content/CVPR2026/supplemental/Kuang_CoIn3D_Revisiting_Configuration-Invariant_CVPR_2026_supplemental.pdf",
+  "https://cvpr.thecvf.com/virtual/2026/poster/38148",
+  "https://github.com/kwong292521/CoIn3D",
+  "https://github.com/kwong292521/CoIn3D/tree/main",
+  "https://github.com/kwong292521/CoIn3D/tree/master/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D",
+  "https://github.com/kwong292521/CoIn3D/issues?q=is%3Aissue",
+  "https://modelscope.cn/datasets/znkwong/CoIn3D_Data",
+  "https://github.com/HuangJunjie2017/BEVDet/tree/dev3.0",
+  "https://github.com/mit-han-lab/bevfusion",
+  "https://raw.githubusercontent.com/fundamentalvision/BEVFormer/master/projects/configs/bevformer/bevformer_small.py"
+ ],
+ "upstream_base": "UniDrive: both project/ and detection_methods/bevfusion/ are copies of mit-han-lab/bevfusion at commit f39a4a0 (2022-09-26, 'Add training details (#150)'). Evidence: the git blob hashes of mmdet3d/models/vtransforms/base.py, fusion_models/bevfusion.py and datasets/pipelines/formating.py equal f39a4a0's blobs. After checking out f39a4a0 into /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/upstream/bevfusion_f39, `diff -rq mmdet3d` shows only datasets/nuscenes_dataset.py and models/heads/bbox/transfusion.py differ, plus CARLA class edits in configs. project/ additionally modifies datasets/pipelines/loading.py and nuscenes_dataset.py (the UniDrive warp and camera swap) and tools/train.py and test.py (spawn). The mmdet3d version is BEVFusion's vendored fork, with no version file (mmcv-full 1.4.0 / mmdet 2.20.0 era).\n\nCoIn3D: BEVDet/ is HuangJunjie2017/BEVDet branch dev3.0 at HEAD 26144be (2024-07-04); BEVDet/mmdet3d/version.py says '1.0.0rc4'. Against a blobless clone at /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/others/upstream/BEVDet-dev3.0, `diff -rq` shows changes only in apis/{train,test}.py, core/hook/{__init__,nvs_gs3d}.py, datasets/{custom_3d,nuscenes_dataset}.py, datasets/pipelines/{__init__,loading,transforms_3d (whitespace only)}.py, models/dense_heads/centerpoint_head.py (optional velocity), models/detectors/{bevdet,prior_utils}.py, models/necks/{fpn (comments only),view_transformer}.py, a new gaussian3d_kernel/, and tools/ (custom train/test/dist scripts). analysis_tools, data_converter, create_data_bevdet.py and the deployment tools were removed. The base detector is BEVDet's BEVDepth4D (bevdet-r50-4d-depth), not Megvii's official BEVDepth repo."
+}

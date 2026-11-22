@@ -19,6 +19,9 @@
 | 2026-11-22 | ~~BEVFormer-S는 LiDAR 좌표계로 학습한다 (선택지 A).~~ 같은 날 아래 결정으로 바뀌었어요. | 사용자 결정("a ㄱㄱ")이었어요. 이후 PCCR 공식 모델 조사를 보고 사용자가 다시 정했어요. |
 | 2026-11-22 | **BEVFormer-S는 차량 고정 좌표계로 학습한다.** 축은 ego와 같고, 원점은 모든 차량에서 R1의 LiDAR 장착 위치(ego 기준 x −0.46, z +1.86 m)예요. 설정값은 `pccr_ref2ego = [-0.46, 0, 1.86]`이에요. | 사용자: "lidar로 하면 차종마다 달라져서 ego로". LiDAR 좌표계는 차량마다 지면 높이가 1.50~4.80 m로 달라지고, PCCR에서 LiDAR 좌표계로 높이를 여러 층 샘플링한 PETR·Fast-BEV는 R6·R9에서 0.0이었어요. 이 원점을 쓰면 etron 리그 9개는 원래 LiDAR 좌표계와 수치까지 같고(확인함), 다른 차량은 지면이 z = −1.86으로 맞춰져요. BEVFormer z 범위([−5, 3])도 그대로예요. 순수 ego(지면 z=0)와는 평행이동만 다르고, 설정값을 `[0, 0, 0]`으로 바꾸고 z 범위를 1.86 m 올리면 돼요. 다른 cross-domain 연구도 원점을 지면 쪽으로 맞춰요([pccr_dataset.md](pccr_dataset.md) "다른 cross-domain 연구의 좌표계"). |
 | 2026-11-22 | **BEVFormer-S 학습 설정:** 배치 8(GPU 2장 × 1샘플 × gradient 누적 4회), AdamW lr 2e-4, 24 epoch, 입력 1280×720(배율 1.0), 백본은 ImageNet 가중치(detectron2 caffe R101, `resnet101_msra-6cc46731.pth`), CAN bus 끔. | 사용자 승인(네 가지 모두 추천안). 공식 small과 PCCR 모델들의 배치 8에 맞췄어요. FCOS3D(nuScenes 학습) 가중치는 쓰지 않아요. 속도 head 없음(PCCR PETR·BEVDet과 같음)과 `cams_embeds` 끔(카메라 수가 리그마다 달라서)은 강제되는 선택이라 따로 묻지 않았어요. |
+| 2026-11-22 | **PD-BEV head:** car 전용 BEV 보조 손실(`bev_loss`)이 7클래스 단일 task head의 car 채널을 쓰게 고친다. head 구조는 vanilla BEVDepth와 같게 둔다. | 사용자 결정(추천안). 원래 `bev_loss`는 head의 첫 task가 car 하나일 때만 돌아가요(`centerpoint_head.py:656`). |
+| 2026-11-22 | **PD-BEV·UDGA 공식 코드 버그는 논문 의도대로 고친다.** 고친 내용은 모두 문서에 남기고, 표에는 수정 재구현이라고 밝힌다. | 사용자 결정. 추천안은 공식 동작 유지였어요. 버그 목록은 [porting_plan.md](porting_plan.md) 2장, 3장에 있어요. |
+| 2026-11-22 | **PD-BEV 섭동 범위는 두 가지 다 실험한다.** PD-BEV-A는 공식 설정 값이에요: pitch·roll ±0.04 rad, yaw ±0.4 rad, xyz ±2 m. yaw는 논문 본문에 0.2로 적혀 있지만 논문 그림 9와 표 1이 0.4와 맞아서 0.4를 써요. PD-BEV-B는 PCCR 리그에 맞춘 값이에요: yaw ±22.5°, pitch ±20°, roll ±0.04 rad, x −2.9~+5.3 m, y −0.6~+0.8 m, z −0.5~+2.7 m. | 사용자 결정("둘다 실험 논문은 A, pccr rig 는 B", A yaw 0.4와 B 범위는 추천안). B는 PCCR 테스트 카메라마다 시야 방향이 가장 가까운 R1 카메라와 비교한 최대 변화량이에요(리그 정의 JSON에서 계산). 테스트 리그 정보를 쓰므로 표에서 따로 표시해야 해요. 외부 파라미터만 섭동하고, FOV 변화는 virtual depth가 처리해요. pitch 범위가 실제로 카메라를 기울이게 하려면 PDBEV-10을 먼저 고쳐야 해요([bug_ledger.md](bug_ledger.md)). |
 
 ### BEVDepth base = PD-BEV 트리: 반드시 지킬 것
 
@@ -35,4 +38,3 @@ PD-BEV는 원본 BEVDet 파일 16개를 직접 고쳤어요. 그래서 그 트�
 | 항목 | 제안(기본값) | 왜 중요한가 |
 |---|---|---|
 | 기존 BEVFormer-S(PCCR) 코드 | 답이 없어서 새로 만들었어요(2026-11-22). 공식 BEVFormer 위에 PCCR 어댑터를 붙였어요. 기존 코드가 있으면 알려 주세요. 그 방식과 비교해서 맞출게요. | 표의 기존 BEVFormer-S 행(R1 21.1, R1-c6 19.6, R1-c10 26.2 …)을 어떻게 만들었는지 몰라요. 좌표계, `cams_embeds`, 해상도, 학습 설정이 다르면 우리 행과 수치가 달라질 수 있어요. 기존 행의 R6·R9가 0 근처면 LiDAR 좌표계로 돌렸다는 뜻이에요. |
-| PD-BEV head 구성 | PD-BEV의 `bev_loss`는 head task 0이 클래스 1개일 때만 동작해요. PCCR 기준 head는 9-class 단일 task예요. | head를 car 단독 task가 앞에 오는 다중 task로 바꿀지, `bev_loss`를 고칠지 정해야 해요. |

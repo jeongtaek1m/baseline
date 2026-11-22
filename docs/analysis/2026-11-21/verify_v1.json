@@ -1,0 +1,153 @@
+{
+ "checks": [
+  {
+   "claim": "Upstream base: fundamentalvision/BEVFormer master @ 66b65f3a (2024-05-03), Apache-2.0",
+   "verdict": "confirmed",
+   "evidence": "`git ls-remote` today: HEAD = refs/heads/master = 66b65f3a1f58caf0507cb2a971b9c0e7f842376c. The clone's `git log -1` shows the date 2024-05-03 18:58 +0800, and LICENSE is Apache 2.0. A second clean clone at the same commit now also exists at /home/jeongtae/Gen2E/bevformer."
+  },
+  {
+   "claim": "bevformer_small.py config facts: R101 caffe, DCNv2 in stages 3-4, out_indices=(3,), FPN in=[2048] with num_outs=1, BEV 150x150, 3 encoder layers, queue 3, video_test_mode=True, scale 0.8 + pad /32 giving 1280x736 (40x23 features), AdamW 2e-4 / wd 0.01 / backbone x0.1 / clip 35, cosine with 500-iter warmup at 1/3 and min_lr_ratio 1e-3, 24 epochs, load_from, num_cams and rotate_center not set",
+   "verdict": "confirmed",
+   "evidence": "projects/configs/bevformer/bevformer_small.py:19-20, 23-24, 38-44, 47-69, 70-135, 136-168, 175-206, 208-237, 239-268. No num_cams or rotate_center appears anywhere in the config. Base and tiny differ exactly as described (base :34-37, :47, :56; tiny :45-48, :57-63, :184)."
+  },
+  {
+   "claim": "Official result and log: 47.9 NDS / 37.0 mAP; 8x A100-SXM-80GB, torch 1.9.0+cu111, mmcv 1.4.0; 3517 it/epoch at ~2.4 s; ~2.7 days; 7.2 GB max allocated; epoch-24 NDS 0.4787 / mAP 0.3700",
+   "verdict": "confirmed",
+   "evidence": "README.md:45 gives 47.9 / 37.0 / 10500M. Log lines 6, 461, 3538, 3610, 5289. Log lines 9 and 27 show PyTorch 1.9.0+cu111 and MMCV 1.4.0. The run starts 2022-06-18 15:50 and the last eval is 2022-06-21 07:38, about 2.66 days. Max `memory:` is 7224. Line 5292 reads NDS 0.4787 / mAP 0.3700."
+  },
+  {
+   "claim": "queue_length=1 crashes upstream, and the fix is to skip obtain_history_bev when len_queue==1",
+   "verdict": "confirmed",
+   "evidence": "Traced bevformer.py:217-222 -> :165-167 (reshape to (0,N,3,H,W)) -> :77-81 (neither branch fires because size(0)=0) -> grid_mask.py:86-87 (returns x unchanged in eval mode) -> ResNet conv1. Reproduced with the bevformer env's own torch 1.9.1 on CPU: a (0,6,3,32,64) input to Conv2d raises 'Expected 4-dimensional input for 4-dimensional weight ... got 5-dimensional input'. nuscenes_dataset.py:40-44 returns only the current frame and union2one :66-72 sets prev_bev_exists=False, so the guard alone is sufficient."
+  },
+  {
+   "claim": "The prev_bev=None path is the paper's BEVFormer-S; paper \u00a73.4 / \u00a74.2 wording; Table 2 gives BEVFormer-S 0.448 / 0.375 / mAVE 0.802 vs BEVFormer 0.517 / 0.416 / 0.394; no static result for small",
+   "verdict": "confirmed",
+   "evidence": "Read arXiv 2203.17270v2. p.6 \u00a73.4: 'degenerate into a self-attention ... replace ... {Q, B'_{t-1}} with duplicate BEV queries {Q, Q}'. p.7 \u00a74.2 Baselines: the BEVFormer-S definition. p.8 Table 2 matches the numbers. Code: encoder.py:210-212, temporal_self_attention.py:177-180 and :197. README lists only temporal small/tiny results. One caveat: whether this code path is *exactly* the paper's BEVFormer-S implementation cannot be checked, because no static config or checkpoint was released."
+  },
+  {
+   "claim": "num_cams=6 is hard-coded in two places; any N != 6 crashes at transformer.py:171, then at spatial_cross_attention.py:152 (IndexError) or :157 (reshape)",
+   "verdict": "partly_wrong",
+   "evidence": "Confirmed at transformer.py:40, 74-75, 170-171 and spatial_cross_attention.py:47, 66, 144-147, 155-164. Reproduced the :171 broadcast RuntimeError with N=8 on the env's torch.",
+   "correction": "The summary (\u00a70.3) says only ':152 if camera embeddings are disabled'. That holds only for N>6. For N<6 the failure is the reshape at :157, which matters for PCCR R5 with 4 cameras. For N=1 the cams_embeds add broadcasts silently to 6 cameras, and the img.squeeze_() at bevformer.py:77-78 also breaks."
+  },
+  {
+   "claim": "SCA chooses visible queries from batch item 0 only; TSA concatenates value[:bs]; both are harmless at bs=1",
+   "verdict": "confirmed",
+   "evidence": "spatial_cross_attention.py:138-141 uses mask_per_img[0], then :149-153 reuses those indexes for every j, while :169-172 counts per sample. temporal_self_attention.py:197 uses torch.cat([value[:bs], query]). value is laid out [prev_0, cur_0, prev_1, ...] (encoder.py:206-207) or [Q0, Q0, Q1, Q1] (TSA :180)."
+  },
+  {
+   "claim": "rotate_center defaults to [100,100], wrong for 150x150 (should be [75,75]); affects temporal mode only",
+   "verdict": "confirmed",
+   "evidence": "transformer.py:50 and :152-153. The config never overrides it (small :80-85; base and tiny do not either). Tiny's 50x50 grid is even further off. In static mode prev_bev is None, so the rotate block at :143-156 is skipped."
+  },
+  {
+   "claim": "BEV tensor layout: outs['bev_embed'] is (22500,B,256), get_bev_features returns (B,22500,256), q = h*150+w, so permute(1,2,0).reshape gives [b,c,y,x]; z anchors at -4.5, -2.17, 0.17, 2.5 m",
+   "verdict": "confirmed",
+   "evidence": "encoder.py:61-71 (xs indexed by w, ys by h, flattened as h*W+w) and :102-107 (z = ref*8-5). transformer.py:273 and :289. bevformer_head.py:143-154 and :205-211. encoder.py:201 makes the queries batch-first, so the encoder output is (B,22500,256)."
+  },
+  {
+   "claim": "Pipeline metas: cam_intrinsic is not collected; scale_factor stays 1.0 after the 0.8 resize; np.stack forces equal image sizes; normalization uses camera 0 of sample 0",
+   "verdict": "confirmed",
+   "evidence": "transform_3d.py:246-253 (meta_keys has no cam_intrinsic) and :309-322 (only lidar2img, img_shape and ori_shape are updated). mmdet3d loading.py:46-47 (np.stack) and :58 (scale_factor = 1.0). formating.py:47-48. encoder.py:130-131."
+  },
+  {
+   "claim": "Local env 'bevformer': py3.8.20, torch 1.9.1+cu111 (cuDNN 8005, arch list up to sm_86, no PTX), mmcv-full 1.4.0 built locally with GCC 10.5 / CUDA 11.1, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1 egg; every custom op has sm_86 SASS + PTX; 4x RTX 4090 (cc 8.9), driver 535.183.01, P2P = CNS, /usr/local/cuda -> 11.1",
+   "verdict": "confirmed",
+   "evidence": "Version prints using the env python with -I -B. cuobjdump on mmcv _ext: 36 sm_86 ELF + 36 sm_86 PTX. All 11 egg .so files: sm_86 SASS + sm_86 PTX. nvidia-smi query, `topo -p2p r` (all CNS) and `topo -m` (NUMA 0/0/1/1). readlink /usr/local/cuda = /usr/local/cuda-11.1. Whether kernels actually run on sm_89 remains untested by me."
+  },
+  {
+   "claim": "Blocker 1: yapf 0.43.0 breaks mmcv 1.4.0 Config.dump / pretty_text, so tools/train.py:180 fails",
+   "verdict": "confirmed",
+   "evidence": "In the env: mmcv/utils/config.py:496 calls FormatCode(..., verify=True). yapf/yapflib/yapf_api.py:171-175 has no verify parameter and no **kwargs. Config.dump (config.py:534-541) uses pretty_text for .py configs. pretty_text is also used at tools/train.py:204, :208 and :246."
+  },
+  {
+   "claim": "Blocker 2: the local r101_dcn_fcos3d_pretrain.pth is truncated (209,715,200 B vs 225,215,819 B upstream)",
+   "verdict": "confirmed",
+   "evidence": "stat gives 209715200 B (exactly 200 MiB, mtime 2025-09-22). The file starts with a PK header, but zipfile.is_zipfile returns False. HTTP HEAD of the GitHub release asset gives content-length 225215819. This is still the only copy on the machine: I found no other *.pth for it."
+  },
+  {
+   "claim": "The 'fcos3d' pretrain is a PGD checkpoint with img_backbone (676), img_neck (16) and bbox_head (103) keys; small's img_neck.lateral_convs.0 (2048-in) cannot load from it",
+   "verdict": "confirmed",
+   "evidence": "pickletools listing of archive/data.pkl, without loading it, gives exactly 676 / 16 / 103 keys. The embedded config names pgd_r101_caffe_fpn_gn-head_dcn_2x16_1x_nus-mono3d_prior_finetune.py, with neck FPN in_channels=[256,512,1024,2048] and start_level=1, so lateral_convs.0 takes 512 inputs. Not checked: whether the backbone loads completely. Also missed: fpn_convs.0 has the same shape (256->256, 3x3), so it does load, but it carries the C3-level weights onto the C5 path."
+  },
+  {
+   "claim": "/home/jeongtae/mmdetection3d edits (CLASSES reorder, valid_flag forced True) are not active; the installed egg is functionally pristine v0.17.1",
+   "verdict": "confirmed",
+   "evidence": "`git status` shows only nuscenes_dataset.py modified, and `git diff` shows those edits. `diff -w` of HEAD:nuscenes_dataset.py against the egg's copy is empty; plain diff shows one whitespace-only line at 264-265."
+  },
+  {
+   "claim": "HEAD differs from the code that produced the released checkpoints: 2a6a04e (queue construction) and 2f37d0d (shift_ref_2d.clone() fix, comment left stale); both affect temporal mode only",
+   "verdict": "confirmed",
+   "evidence": "`git log -L196,198:encoder.py` shows `ref_2d  # .clone()` changed to `ref_2d.clone()` in 2f37d0d, with the 'bug' comment unchanged. 2a6a04e rewrites prepare_train_data and adds prev_bev_exists checks. The log is dated 2022-06-18, before both. Minor omissions in upstream_base, none of which change v1-small behaviour: 6bcccec (adds MM_BEVFormerLayer), 2c889a3 (drops a tkinter import), and an init->HEAD real_w/real_h swap in bevformer_head.py that is a no-op for a square pc_range."
+  },
+  {
+   "claim": "No TcarBEVFormer/ and no BEVFormer checkout anywhere under /home/jeongtae",
+   "verdict": "partly_wrong",
+   "evidence": "`find` today: /home/jeongtae/Gen2E/bevformer exists. It is a clean clone of 66b65f3 (origin fundamentalvision/BEVFormer), created 2026-11-21 23:17:09, after the analyzer's 22:56 clone. There is still no TcarBEVFormer anywhere, including inside /home/jeongtae/backup/*.tar.gz.",
+   "correction": "The claim is stale. A BEVFormer checkout now exists at /home/jeongtae/Gen2E/bevformer, next to PD-BEV, UDGA, third_party/pccr and third_party/mmdetection3d-v0.17.1."
+  },
+  {
+   "claim": "TCAR integration in tcar_bevdet: converter sets can_bus=np.zeros(18), uses 6 nuScenes camera names, inverts the LiDAR calibrated_sensor, writes *_infos_temporal_*.pkl",
+   "verdict": "confirmed",
+   "evidence": "tcar_bevdet/tools/data_converter/tcar_converter.py:217-220 (inversion), :222 (zeros), :254-260 (camera names), :103-114 (temporal pkl names). The other files listed also exist; tcar_eval.py is at mmdet3d/datasets/tcar_eval.py."
+  },
+  {
+   "claim": "Data requirements: 'Static mode needs neither' ordered keyframes, scene_token nor ego poses; \u00a72: 'No need for frame sequences, ego poses or ordering'",
+   "verdict": "partly_wrong",
+   "evidence": "CustomNuScenesDataset.get_data_info reads info['ego2global_*'], ['prev'], ['next'], ['scene_token'], ['can_bus'] and ['frame_idx'] unconditionally (nuscenes_dataset.py:107-119) and writes the ego pose into can_bus (:156-165). union2one reads scene_token (:66). The mmdet3d evaluation path (lidar_nusc_box_to_global) converts boxes to global using lidar2ego and ego2global.",
+   "correction": "In static mode, ordering and scene continuity are not needed. The keys must still exist (dummy values are fine), and correct ego poses are still needed for global-frame evaluation. They also reach can_bus_mlp unless use_can_bus=False."
+  },
+  {
+   "claim": "Recommended cams_embeds policy (a): use_cams_embeds=False is 'a small deviation from the official config'",
+   "verdict": "partly_wrong",
+   "evidence": "transformer.py:74-75 always creates cams_embeds, but :170-171 uses it only when use_cams_embeds is True. mmdet_train.py:72 defaults find_unused_parameters to False.",
+   "correction": "With DDP, an untouched parameter makes PyTorch 1.9 raise 'Expected to have finished reduction in the prior iteration' at the second iteration. Option (a) needs either find_unused_parameters=True or creating cams_embeds only when it is used, which is what transformerV2.py:78-79 already does."
+  },
+  {
+   "claim": "SCA 'has no weights', so reading num_cams from key.shape[0] makes it rig-agnostic",
+   "verdict": "partly_wrong",
+   "evidence": "SCA has output_proj (spatial_cross_attention.py:67), and its MSDeformableAttention3D has sampling_offsets, attention_weights and value_proj (:245-249).",
+   "correction": "The conclusion still holds, because none of these weights is per-camera, so the dynamic num_cams change is safe. But 'no weights' is false as written."
+  },
+  {
+   "claim": "GradientCumulativeOptimizerHook is available in mmcv 1.4.0 and BEVFormer's train API accepts it",
+   "verdict": "confirmed",
+   "evidence": "env mmcv/runner/hooks/optimizer.py:45-46 registers it. mmdet_train.py:136-139 passes a typed optimizer_config through. Expect a harmless BatchNorm warning (optimizer.py:92), since BN is frozen."
+  },
+  {
+   "claim": "BEVFormerV2 is the aux-loss template (head built at :63-64, losses merged at :217-222) and handles an empty history (:165-184)",
+   "verdict": "confirmed",
+   "evidence": "bevformerV2.py:63-64, 217-222 and 165-184. Note that V2 avoids the empty-batch problem by looping over a dict of history frames, not by the exact len_queue>1 guard proposed for v1. Same effect, different mechanism."
+  },
+  {
+   "claim": "PD-BEV facts (README:50 BEVDepth-only, BEV_Aux with 4 height bins, frustum rendering of real and augmented views, depth summation, 0.8 m hard-coded, stride-8 heatmaps); pitfall 'BEVDet and BEVFormer differ in BEV axis order'",
+   "verdict": "partly_wrong",
+   "evidence": "Confirmed: README.md:49-50, configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:93-99 and :206, view_transformer_pc.py:310, 339-343, 355, 358-360, 364.",
+   "correction": "Both BEVs index [y, x]. On nuScenes the real differences are the reference frame (BEVFormer uses LIDAR_TOP with x right / y forward; BEVDet-style uses an ego-like frame) and the cell size, not the tensor axis order."
+  },
+  {
+   "claim": "UniDrive (arXiv 2410.13864, ICLR 2025): unified virtual cameras, ground-aware projection, plug-and-play",
+   "verdict": "confirmed",
+   "evidence": "Checked against the arXiv abstract page."
+  },
+  {
+   "claim": "Port effort: env/sanity S, static rig-configurable M, UniDrive M, PD-BEV L",
+   "verdict": "unverifiable",
+   "evidence": "These are estimates I cannot verify. With the now-known PCCR target (see missed items), the static baseline needs mandatory num_cams and dynamic-SCA work, plus a dataset adapter (missing keys, box convention, 9 classes, evaluator). M is still plausible because PCCR's PETR adapter (third_party/pccr/models/PETR/pccr_dataset.py) already builds lidar2img and has its own evaluator. Separately, the sanity step that expects ~47.9 NDS from the released checkpoint on HEAD may not reproduce exactly, because the 2f37d0d clone fix changes temporal inference."
+  }
+ ],
+ "missed": [
+  "The report's environment and workspace sections are out of date. After the analysis, new things appeared: (a) /home/jeongtae/Gen2E/bevformer (clean clone 66b65f3, created 23:17); (b) env gen2e-bevformer (/home/jeongtae/Gen2E/tools/setup_env_bevformer.sh; log logs/setup_env_bevformer.log). That env has yapf 0.40.1, which clears blocker 1 there, nuscenes-devkit 1.1.9 (not 1.0.9), a prebuilt mmcv-full 1.4.0 with SASS for sm_35-sm_86 and no PTX, and mmdet3d editable from Gen2E/third_party/mmdetection3d-v0.17.1. Its log shows a CUDA matmul ran on the 4090. (c) third_party/pccr, the PCCR benchmark that defines exactly R1, R1-c6/c10/f/r/t and R2-R9. (d) PCCR data being downloaded to /data2/PCCR. The truncated checkpoint is still the only copy.",
+  "R1 itself has 8 cameras, not 6. Evidence: third_party/pccr/pccr/configs/rigs/R1.json; /data2/PCCR/R1/samples has 8 CAM_* dirs; R1_infos_mini.pkl lists 8 cams. So the default num_cams=6 crashes even for in-domain R1 training at transformer.py:171. The evaluation rigs have 4 to 10 cameras (R5=4, R2/R8/R1-c6=6, R7/R9=7, R4/R1-f/r/t=8, R6=9, R3/R1-c10=10). That makes dynamic SCA (spatial_cross_attention.py:144-164; :157 fails for N<6) and a cams_embeds policy mandatory, not optional. Slot order follows each rig's info['cams'] order. R1-c6 drops the two back fenders, so slot i no longer matches R1's slot i for i>=3. R1-r swaps the front/back fender yaws.",
+  "The class set is 9 PCCR classes, not 10 nuScenes ones: car, truck, bus, motorcycle, bicycle, adult, child, traffic_light, traffic_sign (third_party/pccr/models/PETR/petr_r50dcn_gridmask_p4_800x320_pccr.py:2-5). bbox_coder.num_classes must be changed together with the head's num_classes. NMSFreeCoder decodes labels as idx % num_classes (core/bbox/coders/nms_free_coder.py:55-57), so a mismatch mislabels silently. BEVFormer's evaluation path also breaks for these names: mmdet3d NuScenesDataset._format_bbox uses DefaultAttribute[name] (egg nuscenes_dataset.py:338, 345), and lidar_nusc_box_to_global uses the detection_cvpr_2019 class_range. Use PCCR's own evaluator instead (models/PETR/pccr_dataset.py:467-779).",
+  "PCCR info files lack 'next', 'frame_idx' and 'can_bus' (pickletools listing of /data2/PCCR/R1/R1_infos_mini.pkl; 'prev' is an integer index). CustomNuScenesDataset.get_data_info would raise KeyError at nuscenes_dataset.py:114, 116 and 117. PCCR does ship nuScenes-style CAN-bus JSONs (/data2/PCCR/R1/can_bus/*_pose.json etc., 115 scenes). So the report's open question about CAN data is answered: yes, it exists. Absolute quaternion and yaw would still leak through can_bus_mlp in static mode.",
+  "PCCR gt_boxes use the mmdet3d>=1.0 convention [x,y,z,l,w,h,yaw] (pccr/lib/data_converter/nuscenes_converter.py:421). The decoded R1 data confirms it: a car has dims 4.79, 2.16, 1.49. BEVFormer runs on mmdet3d 0.17.1, which uses the SECOND convention [x,y,z,w,l,h,-yaw-pi/2] (BEVFormer tools/data_converter/nuscenes_converter.py:300; mmdet3d output_to_nusc_box). Training a DETR head is unaffected (no geometric box augmentation; GIoU weight 0), but evaluation conversions would corrupt mAOE/mASE. Convert on load or evaluate in the matching convention. Also check before reusing PCCR's PETR adapter: it builds boxes with origin=(0.5,0.5,0) (pccr_dataset.py:403-405) and converts yaw with the old -yaw-pi/2 rule (:438).",
+  "PCCR's LIDAR_TOP has identity rotation relative to ego, i.e. x forward (rig JSON rotation [0,0,0]; pccr/lib/utils/coordinate_utils.py:16-48; decoded boxes ahead of the car have yaw\u22480). Its height depends on the vehicle: 1.5 m (R4/R5/R8), 1.86 m (R1-R3/R7), 4.18 m at x=+2.6 (R9), 4.8 m (R6). Two consequences. BEVFormer's temporal shift (transformer.py:129-141) assumes the nuScenes LiDAR mounting, where forward motion maps to BEV +y, so temporal mode on PCCR would mis-shift the previous BEV. Static mode is unaffected. The fixed z-anchors (-4.5..2.5 m in the LiDAR frame) also sit at very different heights above ground per rig, e.g. ground is at about -4.8 m for R6.",
+  "All PCCR cameras are 1280x720 (pccr/core/scene_runner.py:61-62, 249-250; checked on JPEGs of R1, R1-c10, R1-f). The homogeneous-size assumption therefore holds, but the official 0.8 scale gives 1024x576 (32x18 features), not 1280x736.",
+  "Hard-coded nuScenes camera names in the evaluator: nuscnes_eval.py:445-450 in filter_eval_boxes_by_overlap (used only when overlap_test=True). There is also CAM_NUM = 6 in nuscenes_mono_dataset.py:290 (V2 mono path only). I found no camera-adjacency assumption in the v1 code.",
+  "MSDA kernel constraint: im2col_step=64 (spatial_cross_attention.py:209) means bs*num_cams must be <=64 or divisible by 64. This is fine at samples_per_gpu=1 with up to 10 cameras, but caps any samples_per_gpu increase.",
+  "GitHub publishing pitfalls for the user's stated goal. Gen2E/bevformer, PD-BEV, UDGA, third_party/pccr and third_party/mmdetection3d-v0.17.1 each contain their own .git, so a later `git init` at Gen2E would record them as gitlinks unless you strip or convert them. PD-BEV and PCCR have no LICENSE file; UDGA and BEVFormer do."
+ ],
+ "overall": "The report holds up on the code. I checked about 25 claims against the actual sources, environment and data. These all hold: the config, log and README numbers, the tensor shapes and BEV layout, the queue_length=1 crash and its fix (reproduced with the env's torch 1.9.1), the num_cams=6 crash sites (broadcast reproduced with N=8), the SCA/TSA batch bugs, the rotate_center bug, the meta traps, the env versions and SASS/PTX lists, the yapf blocker, the truncated checkpoint, the PGD contents of the pretrain, the inactive mmdet3d edits, the HEAD-vs-release commit history, and the paper and UniDrive quotes.\n\nErrors found:\n1. 'No BEVFormer checkout under /home/jeongtae' is now false: a clean clone at 66b65f3 appeared at /home/jeongtae/Gen2E/bevformer after the analysis.\n2. The recommended use_cams_embeds=False will crash DDP unless find_unused_parameters=True, or unless cams_embeds is only created when used.\n3. 'Static mode needs no ego poses or scene keys' is wrong. The keys are read unconditionally, and evaluation needs the poses.\n4. Smaller imprecisions: the crash site for N<6 is :157, SCA does have weights (just none per camera), and BEVDet vs BEVFormer differ in reference frame rather than axis order.\n\nThe bigger gap is context the report could not have had. Its environment section describes env 'bevformer' only; a new gen2e-bevformer env with yapf 0.40.1 now exists. The PCCR benchmark and data now on disk answer several of its open questions and add hard requirements: R1 has 8 cameras and the eval rigs have 4-10, there are 9 classes, the info files lack next/frame_idx/can_bus, boxes use the mmdet3d>=1.0 convention, the LiDAR is x-forward at heights that vary by vehicle, and images are 1280x720. A BEVFormer-small port to PCCR therefore cannot run unmodified even on R1. Dynamic num_cams, a cams_embeds policy, a PCCR dataset adapter and evaluator, and consistent num_classes are required."
+}

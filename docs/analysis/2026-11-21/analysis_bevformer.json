@@ -1,0 +1,566 @@
+{
+ "topic": "BEVFormer-small (fundamentalvision/BEVFormer) as the backward-view-transform porting target for Gen2E cross-rig baselines (UniDrive, PD-BEV, CoIn3D)",
+ "summary_md": "# BEVFormer-small as a porting target (Gen2E baselines)\n\n**Upstream:** `fundamentalvision/BEVFormer`, branch `master`, commit `66b65f3a` (2024-05-03). License: Apache-2.0.\n\n**Where I looked:**\n- Read-only clone: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevformer/BEVFormer`\n- Official training log for the small model: `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevformer/logs/bevformer_small_epoch_24.log`\n\nPaths are relative to the repo unless they start with `/`.\n\n**Tags used below:**\n- **[V]** = verified. I read the code or ran a read-only command.\n- **[I]** = inferred. Nothing was executed to confirm it.\n\n---\n\n## 0. Summary\n\n1. **What BEVFormer-small is. [V]**\n   - Backbone and neck: R101-DCN (caffe style, C5 output only) followed by a 1-level FPN.\n   - Input: 1280x736.\n   - BEV grid: 150x150 cells of 0.683 m.\n   - Encoder: 3 layers of TSA (temporal self-attention) + SCA (spatial cross-attention).\n   - Decoder: 6 layers, 900 object queries.\n   - Temporal settings: queue of 3 frames, `video_test_mode=True`.\n   - Training: 8 GPUs x 1 sample, AdamW 2e-4, 24 epochs.\n   - Result: 47.9 NDS / 37.0 mAP.\n\n2. **No static (no-temporal) config ships for v1. [V]**\n   - The paper's \"BEVFormer-S\" means TSA turned into plain self-attention over duplicated current BEV queries {Q,Q}.\n   - The upstream `prev_bev=None` code path implements exactly that.\n   - Three changes are needed to run small statically:\n     - `data.train.queue_length=1`\n     - `model.video_test_mode=False`\n     - a 3-line guard in `forward_train`, because upstream crashes when `queue_length=1`.\n\n3. **Rig assumptions are hard-coded. [V]**\n   - `num_cams=6` appears in two places:\n     - `PerceptionTransformer` has a learnable `cams_embeds` of shape [6,256].\n     - `SpatialCrossAttention` uses 6 only for tensor shapes (no weights).\n   - Any camera count other than 6 crashes at `transformer.py:171` (or at `spatial_cross_attention.py:152` if camera embeddings are disabled).\n   - Other hard-coded assumptions:\n     - camera position in the list = camera identity\n     - one image size for all cameras\n     - BEV defined in the LiDAR frame, with z in [-5, 3]\n     - an 18-dim `can_bus` vector added to every BEV query\n     - nuScenes scene splits for evaluation\n\n4. **BEV feature tensor. [V]**\n   - `outs['bev_embed']` has shape `(22500, B, 256)`.\n   - `get_bev_features` returns `(B, 22500, 256)`.\n   - `permute(1,2,0).reshape(B,256,150,150)` gives a map indexed `[b, c, y, x]` in the LiDAR frame.\n\n5. **Local conda env `bevformer`.**\n   - It matches the official stack: torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1.\n   - Every custom CUDA op contains sm_86 SASS + PTX, so it should run on the RTX 4090 (sm_89). [I] I did not launch any kernel.\n   - **Two blockers [V]:**\n     - yapf 0.43.0 breaks mmcv-1.4.0 `Config.dump` / `pretty_text`, so `tools/train.py:180` fails.\n     - The local `r101_dcn_fcos3d_pretrain.pth` is truncated: 209,715,200 B locally vs 225,215,819 B upstream, with no zip central directory.\n\n6. **Hook points.**\n   - **PD-BEV:** subclass the detector and add a training-only branch after the encoder.\n     - Inputs: `bev_embed`, `lidar2img`, `img_feats`, 3D ground-truth boxes.\n     - Template: the BEVFormerV2 mono auxiliary loss.\n   - **UniDrive:** a data-pipeline transform right after `LoadMultiViewImageFromFiles`, or offline re-rendering into new info files.\n     - Set `num_cams = M` (number of virtual cameras).\n\n---\n\n## 1. `projects/configs/bevformer/bevformer_small.py` [V]\n\n| Item | Value | Where |\n|---|---|---|\n| Backbone | ResNet-101, `style='caffe'`, DCNv2 in stages 3-4 (`stage_with_dcn=(F,F,T,T)`), `out_indices=(3,)` (C5 only), `frozen_stages=1`, BN frozen + `norm_eval`, `with_cp=True` | :50-61 |\n| Neck | FPN, `in_channels=[2048]`, 256 channels, `num_outs=1`. Single level, stride 32, so 40x23 features per camera | :62-69, :41 |\n| Image size | 1600x900 \u2192 `RandomScaleImageMultiViewImage([0.8])` \u2192 1280x720 \u2192 `PadMultiViewImage(size_divisor=32)` \u2192 **1280x736**. Same in test; `img_scale=(1600,900)` there is metadata only | :182-183, :192-199 |\n| Normalization | caffe BGR mean [103.53, 116.28, 123.675], std 1, `to_rgb=False` | :23-24 |\n| BEV | 150x150 over 102.4 m (0.683 m per cell); embed dim 256, FFN dim 512 | :38-43 |\n| Encoder | 3 layers, `num_points_in_pillar=4`. TSA: 1 level, default 4 points, 8 heads. SCA: `MSDeformableAttention3D`, 8 points, 1 level. Order: self_attn \u2192 norm \u2192 cross_attn \u2192 norm \u2192 ffn \u2192 norm | :86-113 |\n| Decoder | 6 layers: multi-head attention (8 heads) + `CustomMSDeformableAttention` (1 level), with box refinement | :114-135, :78 |\n| Head | `BEVFormerHead`, 900 queries, 10 classes. Box code size 10: (cx, cy, log w, log l, cz, log h, sin, cos, vx, vy) | :70-79; `bevformer_head.py:49-57`; `core/bbox/util.py:4-24` |\n| Transformer | `rotate_prev_bev`, `use_shift`, `use_can_bus` all True. **`num_cams` (default 6) and `rotate_center` (default [100,100]) are not set** | :80-85; `transformer.py:38-51` |\n| Temporal | `queue_length=3`: current frame + 2 frames drawn at random from the 3 previous key frames. `video_test_mode=True` | :44, :49, :221; `nuscenes_dataset.py:40-44` |\n| Ranges | `point_cloud_range=[-51.2,-51.2,-5,51.2,51.2,3]`; `post_center_range` \u00b161.2 m (xy) / \u00b110 m (z); `max_num=300` | :19, :136-142 |\n| Losses | Focal (weight 2.0), L1 (0.25), GIoU (0); Hungarian matching with the same weights | :149-168 |\n| Augmentation | GridMask (prob 0.7) and photometric distortion only. **No geometric image or BEV augmentation** | :48; `bevformer.py:52-53` |\n| Data | `samples_per_gpu=1`, `workers_per_gpu=4`, `nuscenes_infos_temporal_{train,val}.pkl`, `use_valid_flag=True` | :208-237 |\n| Optimizer | AdamW lr 2e-4, weight decay 0.01, backbone lr x0.1, grad clip 35. Cosine schedule, 500-iter linear warm-up (start ratio 1/3), `min_lr_ratio=1e-3` | :239-255 |\n| Schedule | 24 epochs; eval and checkpoint every epoch | :256-259, :268 |\n| Initialization | `load_from='ckpts/r101_dcn_fcos3d_pretrain.pth'` | :260 |\n| GPUs | 8 (`docs/getting_started.md:7-16`) | \u2014 |\n| Official log | 8x A100-SXM-80GB, torch 1.9.0+cu111, mmcv 1.4.0. 3517 iterations/epoch at ~2.4 s each; ~2.7 days including per-epoch eval | log lines 5-6, 461, 3538, 5289 |\n| Memory | \u226510500 MB (:1, README:45); the log reports 7.2 GB max allocated | \u2014 |\n| Result | **47.9 NDS / 37.0 mAP**. Log at epoch 24: 0.4787 / 0.3700 | README:45 |\n\n**Differences from the other v1 configs [V]:**\n- Small vs base: BEV 200\u2192150, encoder layers 6\u21923, 4 feature levels\u21921 (C5 only), input scale 1.0\u21920.8, `with_cp` added, queue 4\u21923.\n- Tiny: R50 (pytorch style), BEV 50x50, input scale 0.5, queue 3.\n\n**What the pretrain checkpoint really contains.** I listed its pickle opcodes without loading it [V]:\n- Its embedded config describes a **PGD** model (`pgd_r101_caffe_fpn_gn-head_dcn_2x16_1x_nus-mono3d_prior_finetune`), i.e. FCOSMono3D + PGDHead trained on nuScenes monocular 3D.\n- Keys are already prefixed: `img_backbone.*` (676 tensors), `img_neck.*` (16), `bbox_head.*` (103).\n\nWhat loads into BEVFormer-small [I]:\n- The backbone loads completely.\n- `img_neck.lateral_convs.0` does not load. In small it maps 2048\u2192256 channels; in the checkpoint it maps 512\u2192256 (the C3 level, because its FPN has `start_level=1`). mmcv loads with strict=False, so the layer is skipped with a warning and stays randomly initialized.\n- The detection head is ignored.\n\n---\n\n## 2. Static variant (\"BEVFormer-S\")\n\n### What the repo provides [V]\n- Every v1 config is temporal: tiny and small use `queue_length=3`, base uses 4, and all set `video_test_mode=True`.\n- The only single-frame configs are BEVFormerV2 `*-t1-*` (`bevformerv2-r50-t1-base-24ep.py:34` sets `frames=(0,)`, `:158` sets `video_test_mode=False`).\n- Those are a different model: the V2 detector, an R50 backbone, an FCOS3D perspective head and `CustomNuScenesDatasetV2`.\n\n### What the paper says [V, arXiv 2203.17270, pp. 6-8]\n- \u00a74.2: \"We also adapt BEVFormer into a static model called BEVFormer-S via adjusting the temporal self-attention into a vanilla self-attention without using history BEV features.\"\n- \u00a73.4: for the first sample of a sequence, TSA \"degenerates\" by replacing {Q, B'_{t-1}} with {Q, Q}.\n- Table 2 (val set, R101-DCN, base size):\n  - BEVFormer-S: 44.8 NDS / 37.5 mAP / mAVE 0.802\n  - BEVFormer: 51.7 NDS / 41.6 mAP / mAVE 0.394\n- **No static result is published for the small size.**\n\n### Upstream code with `prev_bev=None` = BEVFormer-S [V]\n- `encoder.py:210-212`: TSA reference points become `[ref_2d, ref_2d]`.\n- `temporal_self_attention.py:177-180`: the TSA value becomes `stack([Q, Q])`.\n- `:186-197`: offsets are predicted from `cat([Q, Q+pos])`.\n- Parameter shapes do not change, so checkpoints stay format-compatible.\n\n### Recipe\n1. **Config.**\n   - Set `data=dict(train=dict(queue_length=1))`. Changing the top-level `queue_length` variable alone has no effect, because the base value is already copied into `data.train` at :221.\n   - Set `model.video_test_mode=False`.\n   - `use_can_bus=False` is optional and needs your decision.\n   - `rotate_prev_bev` and `use_shift` become no-ops.\n   - Lists are replaced, not merged, when configs inherit. If you set `num_cams` inside `attn_cfgs`, restate the whole list.\n\n2. **Code: upstream `queue_length=1` crashes.** [V by reading; not executed]\n   - `bevformer.py:217-222` builds `prev_img` with shape `(B, 0, N, 3, H, W)`.\n   - `obtain_history_bev` reshapes it to `(0, N, 3, H, W)` (`:165-167`).\n   - `extract_img_feat` leaves it 5-D (`:77-81`).\n   - GridMask passes it through unchanged in eval mode (`grid_mask.py:86-87`).\n   - ResNet's conv2d then receives a 5-D tensor and raises.\n   - **Fix:** `prev_bev = self.obtain_history_bev(...) if len_queue > 1 else None`.\n   - BEVFormerV2 already handles an empty history this way (`bevformerV2.py:165-184`).\n\n3. **Data and test behaviour [V].**\n   - With `queue_length=1` the dataset returns only the current frame (`nuscenes_dataset.py:40-44`).\n   - `union2one` sets `prev_bev_exists=False` and zeroes `can_bus[:3]` and `can_bus[-1]` (`:66-72`).\n   - At test time, `video_test_mode=False` resets `prev_bev` and zeroes the same `can_bus` entries for every frame (`bevformer.py:250-261`).\n\n### What changes when running static\n- Less compute and memory per iteration: the 2 extra no-grad history frames (backbone + encoder each) disappear.\n- No need for frame sequences, ego poses or ordering.\n- Multi-GPU evaluation no longer cuts videos at GPU boundaries (`getting_started.md:16`).\n- Velocity error and NDS get worse, as in the paper's Table 2.\n- The `rotate_center` bug and the shift bug no longer matter.\n- **`can_bus_mlp` still receives ego-motion data** unless `use_can_bus=False`: the ego quaternion `can_bus[3:7]`, CAN accel / rotation rate / velocity `[7:16]`, and absolute yaw in radians `[16]` (`transformer.py:158-162`; `nuscenes_dataset.py:156-165`).\n\n---\n\n## 3. Code structure and tensor flow (small config; B = batch, N = 6) [V by reading]\n\n### Data side\n- **`CustomNuScenesDataset.get_data_info`** (`nuscenes_dataset.py:86-167`):\n  - Loops over `info['cams'].items()` (:126). The order comes from the converter list (`nuscenes_converter.py:243-250`).\n  - Builds `lidar2cam` and `lidar2img = viewpad(K) @ lidar2cam` (:129-142).\n  - Returns `img_filename`, `lidar2img`, `cam_intrinsic`, `lidar2cam` (:144-150).\n  - Overwrites `can_bus[:3]`, `[3:7]`, `[-2]`, `[-1]` with ego pose and yaw (:156-165).\n- **Pipeline:**\n  - `RandomScaleImageMultiViewImage` resizes the images and left-multiplies `lidar2img` by `diag(s, s, 1, 1)` (`transform_3d.py:309-322`).\n  - `PadMultiViewImage` pads bottom/right. It sets the per-camera `img_shape` / `pad_shape` lists to the padded size (:27-41).\n  - `CustomCollect3D` keeps these meta keys (:246-253): `lidar2img`, `lidar2cam`, `img_shape`, `pad_shape`, `can_bus`, `scene_token`, `box_type_3d`, \u2026\n- **Two traps in the metas:**\n  - `cam_intrinsic` is **not** kept. Recover it as `K' = lidar2img @ inv(lidar2cam)`.\n  - `scale_factor` stays 1.0 (set by mmdet3d `LoadMultiViewImageFromFiles`, `loading.py:58`) even though the images were resized by 0.8.\n- **`union2one`** (:58-84) stacks the frame queue:\n  - `img` becomes `(L, N, 3, H, W)`.\n  - `img_metas` becomes `{i: meta}`, plus `prev_bev_exists` and can_bus deltas.\n\n### Model side (training)\n- **`BEVFormer.forward_train`** (`bevformer.py:180-234`):\n  - Splits the queue into history frames and the current frame (:217-219).\n  - `obtain_history_bev` (:158-177) runs in `eval()` mode under `no_grad` with `only_bev=True`. It returns `prev_bev` of shape `(B, 22500, 256)`.\n  - `extract_feat` returns `[(B, N, 256, 23, 40)]` (:67-108).\n  - `forward_pts_train` runs the head, then `loss` (:111-137).\n- **`BEVFormerHead.forward`** (`bevformer_head.py:117-213`):\n  - Learnable BEV queries `(22500, 256)` and object queries `(900, 512)` (:103-107).\n  - `bev_pos` of shape `(B, 256, 150, 150)` (:139-141).\n  - Calls the transformer (:156-169).\n  - Returns `outs` (:205-211), including `all_cls_scores` and `all_bbox_preds`, each `(6, B, 900, 10)`.\n- **`PerceptionTransformer.get_bev_features`** (`transformer.py:103-200`):\n  - BEV shift computed from `can_bus` (:123-141).\n  - Previous BEV rotated about `rotate_center` (:143-156).\n  - `+ can_bus_mlp` added to the queries (:158-162).\n  - Image tokens `(N, B, 920, 256)` get `cams_embeds[:, None, None, :]` and `level_embeds` added (:164-175).\n  - `feat_flatten` has shape `(N, 920, B, 256)`.\n  - The encoder (:186-198) outputs **`(B, 22500, 256)`**.\n- **`BEVFormerEncoder`** (`encoder.py:151-239`):\n  - `ref_3d` has shape `(B, 4, 22500, 3)`. The 4 pillar anchors sit at z = -4.5, -2.17, 0.17 and 2.5 m in the LiDAR frame (:61-71, :102-107).\n  - `point_sampling` (:88-149):\n    - stacks `lidar2img` into `(B, N, 4, 4)`;\n    - projects the anchors and keeps points with depth > eps;\n    - normalizes by **`img_metas[0]['img_shape'][0]`** (:130-131);\n    - returns `reference_points_cam (N, B, 22500, 4, 2)` and `bev_mask (N, B, 22500, 4)`.\n  - Then 3 encoder layers: TSA \u2192 LN \u2192 SCA \u2192 LN \u2192 FFN \u2192 LN.\n- **SCA** (`spatial_cross_attention.py:75-175`):\n  - Gathers, per camera, the BEV queries visible in that camera (:138-153).\n  - Runs deformable attention over `bs*num_cams` (:155-164).\n  - Averages the result over the cameras that see each query (:165-172).\n- **Decoder:**\n  - The BEV is permuted to `(22500, B, 256)` (`transformer.py:273`).\n  - The decoder runs with `spatial_shapes=[[150, 150]]` (:275-285).\n  - This permuted BEV is what the head returns as `outs['bev_embed']` (:289).\n- **Test:**\n  - `forward_test` caches `outs['bev_embed']` as the next `prev_bev` and resets it on a scene change (`bevformer.py:236-281`).\n  - It only reads `img_metas[0][0]`, so test batch size must be 1.\n\n### BEV grid layout\n- Query index: `q = h*150 + w`.\n- `x = -51.2 + (w + 0.5) * 0.683`, `y = -51.2 + (h + 0.5) * 0.683`.\n- So `permute(1, 2, 0).reshape(B, 256, 150, 150)` gives `[b, c, y, x]`.\n\n### Where to add an auxiliary loss\n- Subclass `BEVFormer` and override `forward_pts_train` (`bevformer.py:111-137`):\n  - keep `outs`;\n  - call the auxiliary head;\n  - `losses.update({k + '_aux': w * v})`.\n- This follows BEVFormerV2: the head is built at :63-64 and its losses are merged at :217-222.\n- Do not hook into `obtain_history_bev`: it runs without gradients and in eval mode.\n- Inference stays unchanged.\n\n---\n\n## 4. Rig assumptions and what breaks across rigs\n\nThe full list is in the `rig_assumptions` field. Key points:\n\n- **Camera count. [V]**\n  - Where it is fixed:\n    - `cams_embeds` = `nn.Parameter(6, 256)` (`transformer.py:40`, `:74-75`), added by broadcasting at :171.\n    - SCA allocates tensors as `[bs, 6, ...]` (`spatial_cross_attention.py:144-147`) and reshapes with `bs*6` (:157-164).\n  - Neither value is set in the config.\n  - Any count other than 6 fails:\n    - first at `transformer.py:171` (broadcast error);\n    - then at `spatial_cross_attention.py:152` (IndexError) or :157 (reshape error).\n- **Camera identity = list position.**\n  - `cams_embeds[i]` is tied to the i-th entry of `info['cams']`.\n  - nuScenes order: FRONT, FRONT_RIGHT, FRONT_LEFT, BACK, BACK_LEFT, BACK_RIGHT.\n  - A different layout with the same camera count silently reuses the wrong embeddings.\n- **One image size per sample.** Three places assume it:\n  - `np.stack` in mmdet3d's loader (`loading.py:46-47`) and its format bundle (`formating.py:47-48`);\n  - `(B, N, C, H, W)` batching in the model;\n  - normalization by camera 0's shape (`encoder.py:130-131`).\n- **Fixed 0.8 resize**, tuned for 1600x900 inputs.\n- **LiDAR-centric BEV.** `lidar2img` is relative to LIDAR_TOP. The z anchors assume the nuScenes LiDAR height (z in [-5, 3]).\n- **Evaluation is tied to nuScenes scene splits** (`nuscnes_eval.py:244-301`; `nuscenes_dataset.py:208-211`).\n- **Mixing samples within a batch.** These bugs are harmless at batch size 1 with a single rig, and break with mixed rigs or per-sample camera augmentation:\n  - SCA picks visible queries using batch item 0's mask for every sample (`spatial_cross_attention.py:138-140`).\n  - TSA concatenates `value[:bs]` (`temporal_self_attention.py:197`), so samples \u22651 get another sample's features.\n- **Training on R1, testing on R1-c10 or R2\u2013R9.**\n  - SCA can simply read the camera count from the input (`num_cams = key.shape[0]`). It has no weights.\n  - `cams_embeds` needs a policy:\n    - (a) `use_cams_embeds=False`. Recommended for a rig-agnostic baseline; a small deviation from the official config.\n    - (b) Map each new camera to the R1 camera with the nearest yaw.\n    - (c) A learned, geometry-conditioned embedding. That would change the method rather than reproduce a baseline.\n  - With fewer cameras, unseen BEV cells keep their learned query value.\n  - Image-branch memory grows roughly linearly with camera count [I].\n\n---\n\n## 5. Environment on this machine [V unless marked]\n\n### `/home/jeongtae/miniconda3/envs/bevformer`\n- Python 3.8.20.\n- torch 1.9.1+cu111 (CUDA 11.1, cuDNN 8005).\n  - `get_arch_list()` = sm_37 \u2026 sm_86, no PTX.\n  - `cuda.is_available() = True`; 4x RTX 4090 (compute capability 8.9); driver 535.183.01.\n- mmcv-full 1.4.0, compiled locally (GCC 10.5 / NVCC 11.1).\n  - `mmcv.ops` imports; the ms_deform_attn and modulated_deform_conv ops resolve.\n  - `_ext` contains sm_86 SASS + PTX.\n- mmdet 2.14.0, mmseg 0.14.1.\n- mmdet3d 0.17.1, imported from the site-packages egg `.../site-packages/mmdet3d-0.17.1-py3.8-linux-x86_64.egg/mmdet3d/__init__.py`. All 11 CUDA extensions contain sm_86 SASS + PTX.\n- Other packages:\n  - detectron2 0.6+cu111. The plugin imports it via dd3d.\n  - nuscenes-devkit 1.0.9. Every API used by `nuscnes_eval.py` exists.\n  - numpy 1.19.5, numba 0.48.0, setuptools 59.5.0, timm 0.6.13.\n  - **yapf 0.43.0**.\n- `/usr/local/cuda` points to cuda-11.1.\n- GPU peer-to-peer reports \"CNS\" for every pair, so NCCL goes through host memory.\n\n### RTX 4090 verdict\n- sm_86 binaries run on sm_89 (same major compute capability), so the env should work. [I] Only device queries were run; no kernel was launched.\n- cuDNN 8.0.5 and cuBLAS 11.1 predate the Ada architecture, so speed may be suboptimal [I].\n- Please run a few-iteration training smoke test yourself.\n\n### Blockers\n1. **yapf vs mmcv.** mmcv 1.4.0 calls `FormatCode(..., verify=True)` (`mmcv/utils/config.py:496`), but yapf 0.43.0's `FormatCode` has no `verify` argument (`yapf_api.py:171-175`).\n   - Result: TypeError at `tools/train.py:180` (`cfg.dump`), and again at :204 / :208.\n   - Fix: install `yapf==0.40.1`.\n2. **Truncated pretrain checkpoint.** `/home/jeongtae/mmdetection3d/r101_dcn_fcos3d_pretrain.pth` is 209,715,200 B vs 225,215,819 B upstream.\n   - `zipfile.is_zipfile` returns False, so `torch.load` will fail.\n   - Re-download it.\n\n### Note on the mmdetection3d checkout\n- `/home/jeongtae/mmdetection3d` (tag v0.17.1, commit f1107977) has uncommitted edits in `mmdet3d/datasets/nuscenes_dataset.py`:\n  - CLASSES reordered;\n  - `valid_flag[...] = True`.\n- The installed egg is functionally the pristine v0.17.1, so these edits are **not active**.\n\n---\n\n## 6. Hook points\n\n### 6a. PD-BEV\n**What the official code does.** The official code is `/home/jeongtae/Gen2E/PD-BEV` (EnVision-Research/Generalizable-BEV, commit c2995d1). Its README:50 states that it is used only with BEVDepth. Inside it:\n1. `BEV_Aux` lifts the BEV into 4 height bins (config :94-98).\n2. These voxels are sampled along the camera frustums of the real cameras **and of randomly perturbed virtual cameras** (`bev_aug`).\n3. The samples are summed over depth bins (`view_transformer_pc.py:310-315`, :339-350, :358-366). The cell size is hard-coded to 0.8 m.\n4. 2D heatmap heads run on both the rendered perspective features and the image features. Targets come from projected 3D boxes at stride 8 (`Load3DBoxesHeatmap`, config :206, :211-213).\n5. There is also a BEV heatmap loss (`pcbev.py:69-107`, :126-151).\n\n**How to attach it to BEVFormer.**\n1. In the subclass, after the head runs, take `bev = outs['bev_embed'].permute(1, 2, 0).reshape(B, 256, 150, 150)`.\n2. Lift it to `(B, C', 4, 150, 150)`.\n3. Build frustum points per camera: `X = inv(lidar2img) @ [u\u00b7d, v\u00b7d, d, 1]`, using the final (resized) `lidar2img` and the padded `img_shape`.\n4. For the perturbed virtual cameras, use `lidar2img_aug = K' @ T_aug @ lidar2cam`.\n5. Sample the BEV voxels at those points, aggregate over depth, apply the 2D heads, and add the losses.\n\n**Tensors available:**\n- `img_feats[0]` `(B, 6, 256, 23, 40)`: stride 32, so it must be upsampled for stride-8 targets.\n- `img` `(B, 6, 3, 736, 1280)`.\n- `img_metas` with `lidar2img`, `lidar2cam`, `img_shape`, `pad_shape`.\n- `gt_bboxes_3d` in the LiDAR frame.\n- Optionally, `reference_points_cam` / `bev_mask` from `encoder.py:193-194`.\n\n**Data side.**\n- Add a transform after `PadMultiViewImage` (:183, :199) that produces the 2D targets for both real and perturbed cameras.\n- Add the new keys to `CustomCollect3D`.\n- `union2one` already keeps the current frame's keys (`nuscenes_dataset.py:81-84`).\n\n**Pitfalls:**\n- BEVDet and BEVFormer differ in BEV axis order and cell size (0.8 m vs 0.683 m).\n- `cam_intrinsic` and a correct `scale_factor` are missing from the metas.\n- `find_unused_parameters` defaults to False (`mmdet_train.py:72-79`). Every auxiliary parameter must receive a gradient.\n- The BEVDepth-specific virtual-depth branch has no BEVFormer counterpart.\n\n### 6b. UniDrive\n**What it is.** UniDrive (arXiv 2410.13864, ICLR 2025) uses \"a set of unified virtual cameras\" with a \"ground-aware projection\". The paper presents it as a plug-and-play module.\n\n**Where it plugs into BEVFormer.**\n- Add a transform right after `LoadMultiViewImageFromFiles`: line 176 in the train pipeline, line 189 in the test pipeline. It must run before Normalize / RandomScale / Pad.\n- It reads, all already present in `input_dict` (`nuscenes_dataset.py:144-150`):\n  - `results['img']` (N images, float32 BGR);\n  - `cam_intrinsic` (unscaled 4x4);\n  - `lidar2cam`.\n- It writes M virtual images and consistent `lidar2img`, `lidar2cam`, `cam_intrinsic`, `filename`, and `img_shape` / `ori_shape` / `pad_shape`.\n- Ground-truth boxes stay in the LiDAR frame.\n\n**Offline alternative.**\n- Render the virtual images once and write new infos where `info['cams']` lists the M virtual cameras.\n- Camera names are never used (`nuscenes_dataset.py:126-139`), so BEVFormer needs no code change.\n\n**Model.**\n- Set `num_cams = M` in both places.\n- Each `cams_embeds` slot then belongs to a fixed virtual camera, which is consistent across rigs.\n- Keep RandomScale / Pad consistent with the virtual image size.\n- Apply the same projection to every evaluation rig.\n\n---\n\n## 7. TCAR / `TcarBEVFormer/`\n\n- `TCAR_README.md:3` mentions a `TcarBEVFormer/` directory.\n- **No such directory exists under /home/jeongtae at depth \u2264 2, and there is no BEVFormer checkout there at all.** [V]\n- `tcar_bevdet` does contain a TCAR integration that looks ported from a BEVFormer one:\n  - `tools/create_data_tcar.py`, `tools/data_converter/tcar_converter.py`, `tools/tcar/splits.py`, `mmdet3d/datasets/tcar_dataset.py`, `tcar_eval.py`.\n  - The converter writes `*_infos_temporal_*.pkl`.\n  - It sets `can_bus = np.zeros(18)` (:222).\n  - It uses 6 nuScenes camera names (:254-260).\n  - It inverts the LiDAR `calibrated_sensor` (:217-220).\n- Likely consequences [I]:\n  - These infos should load in `CustomNuScenesDataset`.\n  - Evaluation needs the TCAR splits.\n\n---\n\n## 8. Bugs and gaps\n\nDetails are in the `bugs_or_gaps` field:\n- crash with `queue_length=1`\n- `num_cams=6` in two places\n- TSA `value[:bs]`\n- SCA uses batch item 0's mask for every sample\n- `rotate_center` [100,100] for a 150x150 BEV\n- normalization by camera 0's image shape\n- test batch size must be 1\n- HEAD differs from the code that produced the released checkpoints (temporal mode only)\n- yapf incompatibility\n- truncated checkpoint\n- PGD checkpoint neck mismatch\n- stale `scale_factor`\n\n---\n\n## 9. Suggested repo organization for GitHub\n\n- Vendor the upstream code at commit `66b65f3` as the first commit.\n- Keep each Gen2E patch as a separate commit:\n  - static guard\n  - dynamic SCA camera count\n  - `cams_embeds` policy\n  - new datasets\n  - UniDrive / PD-BEV modules\n- Put configs under `projects/configs/gen2e/`.\n- Keep this report as `docs/`.\n- Record the env fixes (yapf pin, checkpoint checksum) in the README.\n\n## 10. Questions for you\n\nSee `open_questions`. Every item there needs your decision.",
+ "components": [
+  {
+   "name": "BEVFormer detector (temporal orchestration)",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/detectors/bevformer.py"
+   ],
+   "role": "Splits the frame queue into history/current, computes history BEV without grad (obtain_history_bev :158-177), extracts image features (:67-108), runs head+loss (:111-137, :180-234), caches bev_embed as prev_bev at test time (:236-281).",
+   "method_specific": true,
+   "port_notes": "Add the len_queue>1 guard for static mode (queue_length=1 crashes, :217-222). Subclass here for PD-BEV aux losses (override forward_pts_train). Test batch must be 1 (:243-261). img.squeeze_() at :77-78 collapses N if a rig had a single camera."
+  },
+  {
+   "name": "BEVFormerHead",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/dense_heads/bevformer_head.py"
+   ],
+   "role": "Owns learnable BEV queries (bev_h*bev_w,256) and object queries (900,512) (:103-107), positional encoding, calls PerceptionTransformer, DETR-style cls/reg branches with box refinement, Hungarian loss (:395-480), decoding (:482-509).",
+   "method_specific": true,
+   "port_notes": "outs['bev_embed'] is (22500,B,256); only_bev=True returns (B,22500,256) (:143-154). Rig-independent except through the transformer. A GroupDETR variant exists (:512+)."
+  },
+  {
+   "name": "PerceptionTransformer",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/transformer.py"
+   ],
+   "role": "Adds cams_embeds/level_embeds to image tokens, can_bus MLP to BEV queries, aligns prev_bev (shift/rotation), runs encoder then decoder.",
+   "method_specific": true,
+   "port_notes": "Hard-coded defaults num_cams=6 (:40) -> learnable cams_embeds (6,256) (:74-75, :171), rotate_center=[100,100] (:50; wrong for 150x150). Switches use_cams_embeds/use_can_bus exist (:47-49). Main place to decide the cross-rig camera-embedding policy."
+  },
+  {
+   "name": "BEVFormerEncoder / BEVFormerLayer",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/encoder.py"
+   ],
+   "role": "Builds 3D pillar anchors and 2D BEV reference points, projects anchors into each camera via img_metas lidar2img (point_sampling :88-149), runs TSA->SCA->FFN layers (:214-230, :356-405).",
+   "method_specific": true,
+   "port_notes": "Normalizes by img_metas[0]['img_shape'][0] (:130-131) -> homogeneous image size assumed. reference_points_cam/bev_mask (:193-194) are BEV<->PV correspondences that PD-BEV could reuse. z anchors are in the LiDAR frame."
+  },
+  {
+   "name": "SpatialCrossAttention + MSDeformableAttention3D",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py"
+   ],
+   "role": "Per-camera gathering of visible BEV queries, deformable attention on that camera's features, averaging over hit views.",
+   "method_specific": true,
+   "port_notes": "num_cams=6 default (:47, :66) used only for shapes (:144-164) -> make it dynamic (key.shape[0]); no weights, so it is safe for cross-rig tests. Query selection uses batch item 0's mask (:138-140); fix it before using bs>1 with heterogeneous cameras."
+  },
+  {
+   "name": "TemporalSelfAttention",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py"
+   ],
+   "role": "Deformable attention over {prev_bev, current queries}; degenerates to self-attention over {Q,Q} when prev_bev is None (:177-180).",
+   "method_specific": true,
+   "port_notes": "This degenerate path is BEVFormer-S. value[:bs] concat bug for bs>1 (:197). Weights are shape-compatible between static and temporal modes."
+  },
+  {
+   "name": "Detection decoder",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/decoder.py"
+   ],
+   "role": "Deformable-DETR-style decoder over the BEV (single level 150x150) with iterative reference refinement.",
+   "method_specific": false,
+   "port_notes": "Rig-independent: it only sees the BEV."
+  },
+  {
+   "name": "MSDA CUDA wrapper",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/modules/multi_scale_deformable_attn_function.py"
+   ],
+   "role": "Autograd wrapper around mmcv _ext ms_deform_attn_forward/backward (always fp32).",
+   "method_specific": false,
+   "port_notes": "Needs mmcv-full compiled ops; the local env has sm_86 SASS+PTX (should run on sm_89; not kernel-tested)."
+  },
+  {
+   "name": "CustomNuScenesDataset",
+   "files": [
+    "projects/mmdet3d_plugin/datasets/nuscenes_dataset.py"
+   ],
+   "role": "Temporal queue sampling (:31-55), union2one with can_bus deltas and prev_bev_exists (:58-84), per-camera lidar2img from sensor2lidar + intrinsics (:86-150), can_bus overwrite from ego pose (:156-165), nuScenes evaluation (:184-240).",
+   "method_specific": true,
+   "port_notes": "Camera names unused (only data_path, intrinsics, sensor2lidar_*). Needs nuScenes-format infos and tables; eval_set_map only covers mini/trainval (:208-211). The UniDrive offline path can reuse it unchanged with virtual cameras."
+  },
+  {
+   "name": "Multi-view pipeline transforms",
+   "files": [
+    "projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py",
+    "mmdet3d/datasets/pipelines/loading.py (mmdet3d v0.17.1 LoadMultiViewImageFromFiles)"
+   ],
+   "role": "Load and stack images, photometric distortion, normalize, fixed resize (updates lidar2img only), pad /32, collect metas.",
+   "method_specific": false,
+   "port_notes": "Insertion point for UniDrive (right after loading) and PD-BEV 2D targets (after Pad). CustomCollect3D does not keep cam_intrinsic; scale_factor stays 1.0. np.stack requires equal image sizes."
+  },
+  {
+   "name": "V2 augmentations (reusable)",
+   "files": [
+    "projects/mmdet3d_plugin/datasets/pipelines/augmentation.py"
+   ],
+   "role": "CropResizeFlipImage (image aug + intrinsics) and GlobalRotScaleTransImage (BEV aug updating lidar2img/lidar2cam/gt boxes).",
+   "method_specific": false,
+   "port_notes": "GlobalRotScaleTransImage works with v1 metas; CropResizeFlipImage expects 'cam2img' (v1 provides 'cam_intrinsic'), so it needs a small adapter. v1 small uses no geometric augmentation."
+  },
+  {
+   "name": "nuScenes converter (temporal infos + CAN bus)",
+   "files": [
+    "tools/create_data.py",
+    "tools/data_converter/nuscenes_converter.py"
+   ],
+   "role": "Builds nuscenes_infos_temporal_{train,val}.pkl with can_bus (18-d), frame_idx, scene_token, 6 cameras in a fixed order, LiDAR-frame GT.",
+   "method_specific": false,
+   "port_notes": "Template for R1..R9 converters (the TCAR converter in tcar_bevdet is derived from it). Camera order list at :243-250; CAN-bus extraction at :154-176."
+  },
+  {
+   "name": "Custom nuScenes evaluation",
+   "files": [
+    "projects/mmdet3d_plugin/datasets/nuscnes_eval.py"
+   ],
+   "role": "Copy of the nuScenes devkit detection eval with index/visibility/overlap filters.",
+   "method_specific": false,
+   "port_notes": "Uses create_splits_scenes (nuScenes scene names) in load_gt (:244-301). Custom rigs need split patches as in tcar_bevdet tools/tcar/splits.py."
+  },
+  {
+   "name": "Train/test infrastructure",
+   "files": [
+    "tools/train.py",
+    "tools/test.py",
+    "tools/dist_train.sh",
+    "projects/mmdet3d_plugin/bevformer/apis/mmdet_train.py",
+    "projects/mmdet3d_plugin/bevformer/apis/test.py",
+    "projects/mmdet3d_plugin/datasets/builder.py",
+    "projects/mmdet3d_plugin/datasets/samplers/distributed_sampler.py"
+   ],
+   "role": "Plugin import, DDP (find_unused_parameters default False), custom dataloaders and samplers (contiguous test split per GPU), eval hooks.",
+   "method_specific": false,
+   "port_notes": "tools/train.py:180 cfg.dump crashes with yapf 0.43.0 + mmcv 1.4.0. dist_train.sh always passes --deterministic. GradientCumulativeOptimizerHook is available in mmcv 1.4.0 for an effective batch of 8 on 4 GPUs."
+  },
+  {
+   "name": "DETR3D-derived box utilities",
+   "files": [
+    "projects/mmdet3d_plugin/core/bbox/coders/nms_free_coder.py",
+    "projects/mmdet3d_plugin/core/bbox/assigners/hungarian_assigner_3d.py",
+    "projects/mmdet3d_plugin/core/bbox/match_costs/match_cost.py",
+    "projects/mmdet3d_plugin/core/bbox/util.py"
+   ],
+   "role": "NMS-free decoding, Hungarian assignment, normalized 10-d box code.",
+   "method_specific": false,
+   "port_notes": "Rig-independent."
+  },
+  {
+   "name": "BEVFormerV2 (reference only)",
+   "files": [
+    "projects/mmdet3d_plugin/bevformer/detectors/bevformerV2.py",
+    "projects/mmdet3d_plugin/bevformer/modules/transformerV2.py",
+    "projects/mmdet3d_plugin/datasets/nuscenes_dataset_v2.py",
+    "projects/mmdet3d_plugin/dd3d/",
+    "projects/configs/bevformerv2/"
+   ],
+   "role": "V2 detector with FCOS3D perspective auxiliary head and single-frame t1 configs.",
+   "method_specific": false,
+   "port_notes": "Template for wiring an auxiliary loss (build :63-64, merge :217-222) and for empty-history handling (:165-184). The plugin __init__ imports dd3d, so detectron2 must be installed even for v1."
+  },
+  {
+   "name": "BEVFormer-small config",
+   "files": [
+    "projects/configs/bevformer/bevformer_small.py"
+   ],
+   "role": "Defines the small model, data pipeline, schedule and init checkpoint.",
+   "method_specific": true,
+   "port_notes": "Does not set num_cams or rotate_center. queue_length must be overridden inside data.train. Header comment lists the differences from base."
+  }
+ ],
+ "data_requirements": [
+  "Official setup: nuScenes v1.0-trainval + CAN bus expansion. Generate infos with `python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./data/nuscenes --extra-tag nuscenes --version v1.0 --canbus ./data`, which writes nuscenes_infos_temporal_{train,val}.pkl (docs/prepare_dataset.md:4-41). Layout: data/nuscenes/{samples,sweeps,maps,v1.0-trainval}, data/can_bus, ckpts/.",
+  "Per-sample info keys consumed by CustomNuScenesDataset + mmdet3d NuScenesDataset: token, lidar_path, sweeps (may be []), prev, next, scene_token, frame_idx, timestamp, can_bus (18-d; zeros acceptable, pos/quat/yaw are overwritten from the ego pose), lidar2ego_*, ego2global_*, cams{<any name>: data_path, cam_intrinsic (3x3), sensor2lidar_rotation, sensor2lidar_translation}, gt_boxes (LiDAR frame, x y z w l h yaw in the SECOND convention), gt_names, gt_velocity, num_lidar_pts, valid_flag; metadata.version.",
+  "All cameras of a sample must have the same image resolution (np.stack in LoadMultiViewImageFromFiles and DefaultFormatBundle3D; encoder normalizes by camera 0's shape). Different rigs may differ from each other.",
+  "Temporal mode only: keyframes ordered by timestamp with consistent scene_token and ego poses (infos are sorted globally by timestamp in mmdet3d nuscenes_dataset.py:187). Static mode needs neither.",
+  "Evaluation: nuScenes-format tables (v1.0-trainval JSONs) under data_root, scene split lists compatible with create_splits_scenes (or patched splits, as in tcar_bevdet tools/tcar/splits.py), detection_cvpr_2019 config, nuscenes-devkit.",
+  "Pretrained init: ckpts/r101_dcn_fcos3d_pretrain.pth (upstream 225,215,819 bytes). It is actually a PGD nuScenes-mono3D checkpoint. The local copy at /home/jeongtae/mmdetection3d is truncated (209,715,200 B). Optional sanity checkpoint: bevformer_small_epoch_24.pth (47.9 NDS).",
+  "GT validity: use_valid_flag=True needs valid_flag (from LiDAR+radar point counts). Synthetic or other rigs must supply it or disable the filter.",
+  "PD-BEV port: 2D heatmap/regression targets can be derived on the fly from gt_bboxes_3d + final lidar2img + padded img_shape (no 2D annotations needed) [inferred]. Augmented-view targets need sampled camera perturbations in the pipeline.",
+  "UniDrive port: original per-camera intrinsics and lidar2cam (already in input_dict) plus a virtual camera configuration (M cameras, K_v, T_v). The offline variant needs disk space for re-rendered images and a new info pkl per rig.",
+  "Cross-rig evaluation: one info pkl and one nuScenes-format table set per evaluation rig (R1, R1-c6/c10/f/r/t, R2-R9), all with the same reference frame convention (LiDAR or virtual LiDAR) and class set."
+ ],
+ "rig_assumptions": [
+  {
+   "assumption": "Exactly 6 cameras with a learnable per-slot embedding cams_embeds (num_cams=6, 256), broadcast-added to image tokens",
+   "location": "projects/mmdet3d_plugin/bevformer/modules/transformer.py:40,74-75,99,170-171 (config bevformer_small.py:80-85 does not override num_cams)",
+   "impact": "Any N != 6 raises a broadcast RuntimeError at transformer.py:171. A 6-cam checkpoint cannot provide embeddings for 10 cameras (size mismatch -> random init). Cross-rig tests need a policy: disable, nearest-yaw mapping, or a geometry embedding."
+  },
+  {
+   "assumption": "SpatialCrossAttention allocates and reshapes tensors with a fixed num_cams=6",
+   "location": "projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py:47,66,144-147,155-164",
+   "impact": "N=10 -> IndexError at :152; N<6 -> reshape error at :157. No learnable weights, so reading num_cams from key.shape[0] makes it rig-agnostic for free."
+  },
+  {
+   "assumption": "Camera identity is the list position: info['cams'] insertion order FRONT, FRONT_RIGHT, FRONT_LEFT, BACK, BACK_LEFT, BACK_RIGHT",
+   "location": "tools/data_converter/nuscenes_converter.py:243-257; projects/mmdet3d_plugin/datasets/nuscenes_dataset.py:126",
+   "impact": "cams_embeds[i] is tied to slot i, not to geometry. Rigs with the same count but different placement (R1-r, R1-t, R2-R9) silently reuse mismatched embeddings."
+  },
+  {
+   "assumption": "All cameras in a sample share one image size; normalization uses camera 0 of batch item 0",
+   "location": "projects/mmdet3d_plugin/bevformer/modules/encoder.py:130-131; mmdet3d/datasets/pipelines/loading.py:46-47; mmdet3d/datasets/pipelines/formating.py:47-48; bevformer.py:77-81",
+   "impact": "Rigs with per-camera resolutions crash in np.stack or would be mis-normalized; they must be resized to a common size with intrinsics updated."
+  },
+  {
+   "assumption": "Input resolution policy tuned for nuScenes 1600x900: fixed resize 0.8 then pad to /32 (1280x736)",
+   "location": "projects/configs/bevformer/bevformer_small.py:182-183,192-199; projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py:309-322,27-41",
+   "impact": "Other native resolutions change the feature-map size and effective focal length; needs an explicit per-rig policy. RandomScale updates only lidar2img (not cam_intrinsic / scale_factor)."
+  },
+  {
+   "assumption": "BEV is defined in the LIDAR_TOP frame; pc_range z in [-5,3] with 4 pillar anchors at z = -4.5, -2.17, 0.17, 2.5 m (nuScenes LiDAR ~1.8 m above ground)",
+   "location": "projects/mmdet3d_plugin/datasets/nuscenes_dataset.py:126-142; projects/mmdet3d_plugin/bevformer/modules/encoder.py:61-71,102-107,188-189; bevformer_small.py:19,89-90",
+   "impact": "Rigs without a LiDAR, or with a differently placed LiDAR, need a consistent (virtual) reference frame across R1 and all eval rigs; otherwise the height anchors miss objects."
+  },
+  {
+   "assumption": "18-d can_bus (position, quaternion, CAN accel / rotation rate / velocity, yaw) is fed through can_bus_mlp into every BEV query, and drives the temporal shift and rotation",
+   "location": "tools/data_converter/nuscenes_converter.py:154-176; projects/mmdet3d_plugin/datasets/nuscenes_dataset.py:156-165; projects/mmdet3d_plugin/bevformer/modules/transformer.py:77-84,123-162",
+   "impact": "Datasets without CAN bus (TCAR uses zeros) see a domain shift in those dims. Even static mode still injects absolute yaw/quaternion unless use_can_bus=False."
+  },
+  {
+   "assumption": "Temporal metadata: ordered keyframes, scene_token, prev/next, ego poses; prev_bev reset on scene change",
+   "location": "projects/mmdet3d_plugin/datasets/nuscenes_dataset.py:31-84; projects/mmdet3d_plugin/bevformer/detectors/bevformer.py:158-177,236-269; mmdet3d nuscenes_dataset.py:187",
+   "impact": "Temporal BEVFormer cannot be trained or evaluated on single-frame rig datasets; timestamp sorting can interleave scenes or rigs. Static mode removes this dependency."
+  },
+  {
+   "assumption": "BEV grid 150x150 but the rotation center defaults to [100,100] (meant for 200x200)",
+   "location": "projects/mmdet3d_plugin/bevformer/modules/transformer.py:50,152-153; bevformer_small.py:42-43,80-85",
+   "impact": "In temporal mode the previous BEV is rotated about the wrong pixel (it should be [75,75]). No effect in static mode."
+  },
+  {
+   "assumption": "Batch items share camera geometry; test batch size is 1",
+   "location": "projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py:138-140; projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py:197; projects/mmdet3d_plugin/bevformer/detectors/bevformer.py:243-261",
+   "impact": "Mixed-rig batches, per-sample camera augmentation or samples_per_gpu>1 give wrong SCA query selection and cross-sample TSA mixing. Keep samples_per_gpu=1 or fix the bugs."
+  },
+  {
+   "assumption": "GT boxes are filtered by LiDAR/radar point counts (use_valid_flag=True)",
+   "location": "projects/configs/bevformer/bevformer_small.py:219; tools/data_converter/nuscenes_converter.py:283-286; mmdet3d NuScenesDataset.get_ann_info",
+   "impact": "Synthetic or other rigs need a valid_flag. The local /home/jeongtae/mmdetection3d checkout forces valid_flag=True (uncommitted, not installed), which would change the training targets if reinstalled."
+  },
+  {
+   "assumption": "nuScenes evaluation protocol: v1.0 tables, nuScenes scene-name splits, detection_cvpr_2019 ranges, 10 nuScenes classes",
+   "location": "projects/mmdet3d_plugin/datasets/nuscenes_dataset.py:184-240 (eval_set_map :208-211); projects/mmdet3d_plugin/datasets/nuscnes_eval.py:244-301; bevformer_small.py:26-29",
+   "impact": "Every evaluation rig needs nuScenes-format tables and patched splits (as the TCAR integration does); the class set is fixed by config."
+  },
+  {
+   "assumption": "Image backbone pretrained on nuScenes monocular 3D (PGD checkpoint) with caffe BGR normalization",
+   "location": "projects/configs/bevformer/bevformer_small.py:23-24,260",
+   "impact": "The backbone has already seen nuScenes 3D supervision, so cross-dataset/cross-rig comparisons with BEVDepth baselines may be unfair if their initializations differ."
+  }
+ ],
+ "port_plan": [
+  {
+   "target": "Environment + upstream sanity check (official BEVFormer-small on this machine)",
+   "steps": [
+    "(User action) Re-download ckpts/r101_dcn_fcos3d_pretrain.pth and check its size (225,215,819 bytes). The copy in /home/jeongtae/mmdetection3d is truncated.",
+    "(User decision) Pin yapf==0.40.1 in env 'bevformer', or clone the env first (conda create --name bevformer_gen2e --clone bevformer) and pin there; otherwise tools/train.py:180 crashes.",
+    "Vendor BEVFormer @66b65f3 as the first commit of the Gen2E baseline repo; keep every Gen2E change as a separate commit; record the env fixes in the README.",
+    "Download bevformer_small_epoch_24.pth and run a 1-GPU eval on nuScenes val (expect about 47.9 NDS; 1-GPU eval is slightly higher than 8-GPU per docs/getting_started.md:16).",
+    "Run a short 4-GPU training smoke test (tools/dist_train.sh, about 50 iterations) to confirm that DCNv2 and ms_deform_attn run on sm_89."
+   ],
+   "effort": "S",
+   "risks": [
+    "Runtime compatibility of the cu111 / cuDNN 8.0.5 stack on Ada has not been kernel-tested.",
+    "Needs the nuScenes temporal infos with CAN bus (or skip the sanity check if nuScenes is not part of Gen2E).",
+    "dist_train.sh forces --deterministic, which slows training."
+   ]
+  },
+  {
+   "target": "BEVFormer-small-S: static, rig-configurable baseline trained on R1 and evaluated on R1, R1-c6/c10/f/r/t, R2-R9",
+   "steps": [
+    "Write a standalone config bevformer_small_static.py: data.train.queue_length=1, model.video_test_mode=False, transformer num_cams=N_R1, use_cams_embeds and use_can_bus per your decision, SpatialCrossAttention num_cams=N_R1 (restate the full attn_cfgs list), class_names and eval settings per dataset; consider evaluation interval > 1 to save time.",
+    "Patch BEVFormer.forward_train: compute prev_bev only when len_queue > 1 (bevformer.py:217-222).",
+    "Make SpatialCrossAttention read num_cams from key.shape[0] so one checkpoint runs on any camera count.",
+    "Implement the chosen cams_embeds policy (e.g. use_cams_embeds=False, or a nearest-yaw slot mapping at test time).",
+    "Write converters for the R1..R9 data into BEVFormer infos: LiDAR-frame sensor2lidar_*, cam_intrinsic, can_bus zeros(18) + ego pose, gt_velocity, valid_flag; equal image size within each rig; documented resolution policy.",
+    "Evaluation: nuScenes-format tables + split patch per rig (model it on tcar_bevdet tools/tcar/splits.py and tcar_eval.py); run tools/test.py with test batch 1 for every rig and collect NDS/mAP.",
+    "Optional: fix TSA value[:bs] and the SCA batch-0 mask if samples_per_gpu > 1 or per-sample camera augmentation is used; otherwise use GradientCumulativeOptimizerHook (cumulative_iters=2) to emulate a total batch of 8."
+   ],
+   "effort": "M",
+   "risks": [
+    "The cams_embeds policy changes baseline numbers and must be applied the same way to all BEVFormer-based baselines.",
+    "Reference-frame (LiDAR vs ego) or z-range mismatches across rigs make the height anchors miss objects.",
+    "can_bus domain shift if R* datasets lack CAN data.",
+    "The nuScenes-split-dependent evaluation code needs patching per rig.",
+    "GPU memory with 10 cameras (not measured)."
+   ]
+  },
+  {
+   "target": "UniDrive on BEVFormer-small (unified virtual cameras)",
+   "steps": [
+    "Get UniDrive's projection (ground-aware) and virtual camera configuration (M cameras, K_v, T_v) from the UniDrive analysis or release.",
+    "Implement a UniDriveVirtualCamProjection pipeline transform: inputs results['img'], ['cam_intrinsic'], ['lidar2cam']; outputs M virtual images plus lidar2img=K_v@lidar2cam_v, lidar2cam, cam_intrinsic, filename and img_shape/ori_shape/pad_shape. Alternatively, render offline and write new infos whose info['cams'] lists the virtual cameras.",
+    "Insert it right after LoadMultiViewImageFromFiles in both pipelines (bevformer_small.py:176 and :189); set RandomScale (e.g. scales=[1.0] if the virtual size is chosen directly) and Pad to match.",
+    "Set num_cams=M in PerceptionTransformer and SpatialCrossAttention; train on R1 projected to virtual; evaluate every rig projected to the same virtual configuration."
+   ],
+   "effort": "M",
+   "risks": [
+    "Projection artifacts from the depth prior (near-range objects, objects off the ground).",
+    "CPU cost of online warping in the dataloader (4 workers per GPU).",
+    "Choice of M and virtual resolution affects both cost and accuracy.",
+    "All virtual images must share one resolution."
+   ]
+  },
+  {
+   "target": "PD-BEV on BEVFormer-small (training-only perspective rendering + 2D supervision)",
+   "steps": [
+    "Subclass BEVFormer (e.g. BEVFormerPDBEV) and build auxiliary modules from config: BEV->voxel lift (4 height bins, like BEV_Aux), frustum renderer using inv(lidar2img) with depth bins inside pc_range, depth aggregation (PD-BEV sums over bins), 2D heatmap+regression head on the rendered PV features (Img_Aux_Dy analog), 2D head on img_feats (Img_Aux analog), BEV heatmap head.",
+    "Override forward_pts_train to keep outs and add the auxiliary losses with weights, following bevformerV2.py:217-222; training only, inference unchanged.",
+    "Add a pipeline transform after PadMultiViewImage: sample camera perturbations (rotation/translation) -> lidar2img_aug; draw 2D targets for real and augmented cameras from gt_bboxes_3d at the chosen stride; register the keys in CustomCollect3D.",
+    "Adapt PD-BEV constants: 0.8 m cell -> 102.4/150 m, LSS frustum -> a frustum built from lidar2img, BEV axis order [y,x].",
+    "Decide on the BEVDepth-specific parts (virtual depth / depth loss, focal resize augmentation): drop them or approximate them, and document the deviation."
+   ],
+   "effort": "L",
+   "risks": [
+    "The official PD-BEV code is BEVDepth-only (README.md:50), so this is a re-implementation and fidelity is uncertain.",
+    "Memory and compute of frustum rendering at stride 8 or 16 on a 24 GB GPU.",
+    "Loss weights need re-tuning for a DETR-style head.",
+    "DDP find_unused_parameters=False requires every auxiliary parameter to receive a gradient.",
+    "Easy to mix up the BEVDet and BEVFormer BEV axis conventions."
+   ]
+  }
+ ],
+ "open_questions": [
+  "Static or temporal? Should the Gen2E BEVFormer-small baselines be static (BEVFormer-S style: queue_length=1, video_test_mode=False; my recommendation, matching the paper's BEVFormer-S definition) or the official temporal model? Do R1 and every eval rig (R1-c6/c10/f/r/t, R2-R9) have consecutive keyframes with ego poses?",
+  "Camera-embedding policy when the camera count or placement differs from R1: (a) train with use_cams_embeds=False (recommended), (b) keep them and map new cameras to the nearest-yaw R1 camera at test time, (c) something else? Should the same policy apply to all BEVFormer-based baselines (UniDrive, PD-BEV, CoIn3D)?",
+  "Keep use_can_bus=True (official) or disable it (recommended for a static cross-rig baseline)? Do the R* datasets have any CAN-bus or ego-motion data (TCAR uses zeros)?",
+  "What exactly is R1 (camera count, image resolution, data format, LiDAR present?), and which BEV reference frame should every rig use (fixed LiDAR / virtual LiDAR at nuScenes-like height, or ego with an adjusted z-range)? pc_range z [-5,3] assumes the nuScenes LiDAR height.",
+  "Image-resolution policy across rigs: keep the official 0.8x native scale, or resize every rig to a common resolution (e.g. 1280x720) with intrinsics updated?",
+  "Batch size and LR on 4x4090: (a) total batch 4 with lr 2e-4 unchanged, (b) lr 1e-4 (linear scaling), or (c) GradientCumulativeOptimizerHook with cumulative_iters=2 to mimic the official total batch of 8? samples_per_gpu=2 would first require fixing the TSA value[:bs] and SCA batch-0 mask bugs.",
+  "Initialization: use the official PGD nuScenes-mono3D R101-DCN checkpoint (it has seen nuScenes 3D labels) or ImageNet weights? Must it match the BEVDepth baselines' initialization?",
+  "Fix upstream bugs (rotate_center for 150x150, TSA value[:bs], SCA batch-0 mask) or keep upstream behaviour for faithfulness? HEAD already includes the shift_ref_2d clone fix that the released checkpoints did not have.",
+  "Environment changes are your call (everything under /home/jeongtae was read-only for me): may I or you pin yapf==0.40.1 in env 'bevformer' (or in a cloned env) and re-download the truncated r101_dcn_fcos3d_pretrain.pth? Should the uncommitted edits in /home/jeongtae/mmdetection3d (valid_flag forced True, CLASSES reorder) apply to BEVFormer training? They are not installed now.",
+  "Evaluation protocol for the R* rigs: nuScenes NDS/mAP with detection_cvpr_2019 ranges and the 10 nuScenes classes? Where will each rig's nuScenes-format tables and split lists come from (TCAR-style splits.py)?",
+  "PD-BEV on BEVFormer: which parts are mandatory (rendering of real and perturbed views, 2D heads on rendered and image features, BEV heatmap loss), and may the BEVDepth-specific parts (virtual depth / depth loss, focal resize augmentation) be dropped? Which render stride and channel count?",
+  "UniDrive: online pipeline transform or offline pre-rendered virtual images? How many virtual cameras M, and optimized per UniDrive or fixed by hand?",
+  "CoIn3D on BEVFormer-small was not analyzed in this task. Should its hook points be scoped next?",
+  "GitHub layout: vendor BEVFormer inside the Gen2E repo (upstream commit + separate patch commits) or keep a fork? Third-party licenses (mmdet3d, detr3d, dd3d code inside BEVFormer) should be checked before publishing."
+ ],
+ "bugs_or_gaps": [
+  "queue_length=1 crashes upstream [V by reading, not executed]. forward_train builds prev_img (B,0,N,3,H,W) (bevformer.py:217-222), obtain_history_bev reshapes it to (0,N,3,H,W) (:165-167), extract_img_feat leaves it 5-D (:77-81), GridMask passes it through in eval mode (grid_mask.py:86-87), and ResNet conv2d raises. Fix: only call obtain_history_bev when len_queue > 1 (BEVFormerV2 handles this at bevformerV2.py:165-184).",
+  "num_cams hard-coded to 6 in PerceptionTransformer (learnable cams_embeds, transformer.py:40,74-75,171) and SpatialCrossAttention (shape-only, spatial_cross_attention.py:47,66,144-164); the config sets neither. Any N != 6 fails: broadcast error at transformer.py:171, then IndexError at spatial_cross_attention.py:152 or a reshape error at :157.",
+  "TemporalSelfAttention concatenates value[:bs] with the query (temporal_self_attention.py:197). value is laid out [prev_0, cur_0, prev_1, cur_1, ...] (encoder.py:206-207; or [Q0,Q0,Q1,Q1] in static mode), so for bs > 1 sample b >= 1 predicts offsets from another sample's features. Harmless at samples_per_gpu=1.",
+  "SpatialCrossAttention selects the visible queries per camera from batch item 0 only (mask_per_img[0], spatial_cross_attention.py:139) but normalizes with per-sample counts (:169-172). Wrong when samples in a batch have different camera geometry (mixed rigs, per-sample camera augmentation).",
+  "rotate_center defaults to [100,100] (transformer.py:50) and is not overridden for the 150x150 BEV of small (bevformer_small.py:80-85), so the previous BEV is rotated about the wrong pixel (it should be [75,75]). Temporal mode only.",
+  "point_sampling normalizes projected points by img_metas[0]['img_shape'][0] (encoder.py:130-131), i.e. camera 0 of batch item 0, which assumes one image size for all cameras and samples.",
+  "forward_test supports only test batch 1: scene_token and can_bus deltas are handled only for img_metas[0][0] (bevformer.py:243-261).",
+  "HEAD differs from the code that produced the released v1 checkpoints (log dated 2022-06-18). shift_ref_2d = ref_2d.clone() was fixed in 2f37d0d (2023-07-27) although the comment still says the bug is kept (encoder.py:196-198), and the queue construction changed in 2a6a04e (2022-09-01). Both affect temporal mode only.",
+  "Env 'bevformer': yapf 0.43.0 is incompatible with mmcv-full 1.4.0. Config.pretty_text calls FormatCode(..., verify=True) (site-packages/mmcv/utils/config.py:496), but yapf's FormatCode has no verify parameter (yapf/yapflib/yapf_api.py:171-175), so tools/train.py:180 (cfg.dump) raises TypeError. Fix: yapf==0.40.1 (user action).",
+  "Local /home/jeongtae/mmdetection3d/r101_dcn_fcos3d_pretrain.pth is truncated: 209,715,200 B (exactly 200 MiB) vs 225,215,819 B upstream; it has a PK header but zipfile.is_zipfile=False (no central directory), so load_from will fail.",
+  "The 'fcos3d' pretrain is actually a PGD checkpoint (embedded config pgd_r101_caffe_fpn_gn-head_dcn_2x16_1x_nus-mono3d_prior_finetune; keys img_backbone/img_neck/bbox_head). For small, img_neck.lateral_convs.0 (2048-in) cannot load from the checkpoint's C3 lateral conv (512-in), so it stays randomly initialized with a warning [inferred from key names and the embedded config].",
+  "img_metas['scale_factor'] stays 1.0 (mmdet3d loading.py:58) although images are resized by 0.8 (transform_3d.py:309-322), and cam_intrinsic is not collected (transform_3d.py:246-253). Ported modules must derive K' from lidar2img @ inv(lidar2cam).",
+  "extract_img_feat calls an in-place img.squeeze_() when B==1 (bevformer.py:77-78); a single-camera rig would lose its camera dimension (edge case).",
+  "Converter quirk: _get_can_bus_info takes accel / rotation-rate / velocity from 'pose' (the first CAN message after the sample) instead of 'last_pose' (tools/data_converter/nuscenes_converter.py:163-176). Low impact; position and orientation are overwritten from the ego pose anyway.",
+  "/home/jeongtae/mmdetection3d (tag v0.17.1, f1107977) has uncommitted edits in mmdet3d/datasets/nuscenes_dataset.py (CLASSES reordered, info['valid_flag'][...] = True). The installed egg in env 'bevformer' is functionally pristine v0.17.1 (whitespace-only diff), so the edits are inactive but would activate on reinstall.",
+  "No static v1 config ships in the repo; only BEVFormerV2 t1 configs are single-frame, and they are a different model."
+ ],
+ "config_facts": [
+  {
+   "key": "upstream",
+   "value": "fundamentalvision/BEVFormer master @ 66b65f3a1f58caf0507cb2a971b9c0e7f842376c (2024-05-03), Apache-2.0",
+   "source": "git log in clone; LICENSE"
+  },
+  {
+   "key": "model.type",
+   "value": "BEVFormer (subclass of mmdet3d MVXTwoStageDetector), use_grid_mask=True, video_test_mode=True",
+   "source": "bevformer_small.py:47-49; detectors/bevformer.py:20-21"
+  },
+  {
+   "key": "img_backbone",
+   "value": "ResNet-101, style=caffe, DCNv2 (deform_groups=1) in stages 3-4, out_indices=(3,) i.e. C5 only, frozen_stages=1, BN2d requires_grad=False + norm_eval=True, with_cp=True",
+   "source": "bevformer_small.py:50-61"
+  },
+  {
+   "key": "img_neck",
+   "value": "FPN in_channels=[2048], out_channels=256, start_level=0, num_outs=1, add_extra_convs=on_output (no extra level): single scale, stride 32",
+   "source": "bevformer_small.py:62-69"
+  },
+  {
+   "key": "_num_levels_",
+   "value": "1",
+   "source": "bevformer_small.py:41"
+  },
+  {
+   "key": "input resolution",
+   "value": "1600x900 scaled by 0.8 -> 1280x720, padded to /32 -> 1280x736 (train and test); per-camera feature map 40x23",
+   "source": "bevformer_small.py:182-183,192-199; transform_3d.py:27-41,309-322"
+  },
+  {
+   "key": "img_norm_cfg",
+   "value": "mean=[103.530,116.280,123.675], std=[1,1,1], to_rgb=False (caffe BGR)",
+   "source": "bevformer_small.py:23-24"
+  },
+  {
+   "key": "bev_h x bev_w",
+   "value": "150 x 150 over 102.4 m -> 0.683 m cells (22500 BEV queries)",
+   "source": "bevformer_small.py:42-43 (cell size derived)"
+  },
+  {
+   "key": "embed_dims / ffn",
+   "value": "256 / 512",
+   "source": "bevformer_small.py:38-40"
+  },
+  {
+   "key": "encoder",
+   "value": "BEVFormerEncoder, num_layers=3, num_points_in_pillar=4 (z anchors -4.5, -2.17, 0.17, 2.5 m in the LiDAR frame), order self_attn-norm-cross_attn-norm-ffn-norm",
+   "source": "bevformer_small.py:86-113; encoder.py:61-71,102-107"
+  },
+  {
+   "key": "TemporalSelfAttention",
+   "value": "embed_dims=256, num_levels=1, num_points=4 (default), num_heads=8 (default), num_bev_queue=2",
+   "source": "bevformer_small.py:95-98; temporal_self_attention.py:55-65"
+  },
+  {
+   "key": "SpatialCrossAttention",
+   "value": "MSDeformableAttention3D num_points=8 (2 per z-anchor), num_levels=1, num_heads=8; SCA num_cams default 6 (not set in config)",
+   "source": "bevformer_small.py:99-108; spatial_cross_attention.py:45-57,204-213"
+  },
+  {
+   "key": "decoder",
+   "value": "DetectionTransformerDecoder num_layers=6, return_intermediate=True; MultiheadAttention (8 heads, dropout 0.1) + CustomMSDeformableAttention (num_levels=1)",
+   "source": "bevformer_small.py:114-135"
+  },
+  {
+   "key": "head",
+   "value": "BEVFormerHead num_query=900, num_classes=10, with_box_refine=True, as_two_stage=False, code_size=10, code_weights [1 x8, 0.2, 0.2]",
+   "source": "bevformer_small.py:70-79; bevformer_head.py:49-57"
+  },
+  {
+   "key": "queue_length",
+   "value": "3 (current frame + 2 frames randomly chosen from the 3 previous keyframes)",
+   "source": "bevformer_small.py:44,221; nuscenes_dataset.py:40-44"
+  },
+  {
+   "key": "PerceptionTransformer flags",
+   "value": "rotate_prev_bev=True, use_shift=True, use_can_bus=True; defaults use_cams_embeds=True, can_bus_norm=True, num_feature_levels=4",
+   "source": "bevformer_small.py:80-85; transformer.py:38-51"
+  },
+  {
+   "key": "num_cams (default, not overridden)",
+   "value": "6 in PerceptionTransformer (cams_embeds 6x256) and SpatialCrossAttention",
+   "source": "transformer.py:40,74-75; spatial_cross_attention.py:47"
+  },
+  {
+   "key": "rotate_center (default, not overridden)",
+   "value": "[100, 100] (wrong for a 150x150 BEV; should be [75,75])",
+   "source": "transformer.py:50,152-153"
+  },
+  {
+   "key": "point_cloud_range / voxel_size",
+   "value": "[-51.2,-51.2,-5.0,51.2,51.2,3.0] / [0.2,0.2,8]",
+   "source": "bevformer_small.py:19-20"
+  },
+  {
+   "key": "bbox_coder",
+   "value": "NMSFreeCoder post_center_range=[-61.2,-61.2,-10,61.2,61.2,10], max_num=300",
+   "source": "bevformer_small.py:136-142"
+  },
+  {
+   "key": "losses",
+   "value": "FocalLoss (gamma 2, alpha 0.25, weight 2.0), L1 weight 0.25, GIoU weight 0; HungarianAssigner3D with the same costs",
+   "source": "bevformer_small.py:149-168"
+  },
+  {
+   "key": "GridMask",
+   "value": "use_h, use_w, rotate=1, ratio=0.5, mode=1, prob=0.7 (training only)",
+   "source": "detectors/bevformer.py:52-53; grid_mask.py:86-87"
+  },
+  {
+   "key": "data loader",
+   "value": "samples_per_gpu=1, workers_per_gpu=4; CustomNuScenesDataset; nuscenes_infos_temporal_train/val.pkl; use_valid_flag=True; DistributedGroupSampler (train) / contiguous DistributedSampler (test)",
+   "source": "bevformer_small.py:170,208-237; samplers/distributed_sampler.py:22-41"
+  },
+  {
+   "key": "optimizer",
+   "value": "AdamW lr=2e-4, weight_decay=0.01, img_backbone lr_mult=0.1; grad_clip max_norm=35",
+   "source": "bevformer_small.py:239-248"
+  },
+  {
+   "key": "lr schedule",
+   "value": "CosineAnnealing, linear warmup 500 iters, warmup_ratio=1/3, min_lr_ratio=1e-3",
+   "source": "bevformer_small.py:250-255"
+  },
+  {
+   "key": "epochs",
+   "value": "24 (EpochBasedRunner), evaluation every epoch, checkpoint every epoch",
+   "source": "bevformer_small.py:256-259,268"
+  },
+  {
+   "key": "load_from",
+   "value": "ckpts/r101_dcn_fcos3d_pretrain.pth (actually a PGD nuScenes-mono3D R101-DCN checkpoint; upstream size 225,215,819 B)",
+   "source": "bevformer_small.py:260; pickle opcode listing of the local copy; HTTP HEAD of the GitHub release asset"
+  },
+  {
+   "key": "GPUs assumed",
+   "value": "8 GPUs x 1 sample (total batch 8)",
+   "source": "docs/getting_started.md:7-16; official log gpu_ids=range(0,8)"
+  },
+  {
+   "key": "official training run",
+   "value": "8x A100-SXM-80GB, PyTorch 1.9.0+cu111, MMCV 1.4.0, mmdet 2.14.0; 3517 iters/epoch at ~2.4 s/iter; about 2.7 days for 24 epochs including per-epoch eval; max allocated memory 7.2 GB",
+   "source": "bevformer_small_epoch_24.log lines 5-6, 461, 3538, 3610, 5289"
+  },
+  {
+   "key": "memory",
+   "value": "at least 10500 MB per GPU",
+   "source": "bevformer_small.py:1; README.md:45"
+  },
+  {
+   "key": "official result",
+   "value": "BEVFormer-small: NDS 47.9 / mAP 37.0 (log epoch 24: 0.4787 / 0.3700)",
+   "source": "README.md:45; official log"
+  },
+  {
+   "key": "static variant in repo",
+   "value": "None for v1 (tiny/small queue 3, base queue 4, all video_test_mode=True); only BEVFormerV2 t1 configs are single-frame (frames=(0,))",
+   "source": "projects/configs/bevformer/*.py; bevformerv2-r50-t1-base-24ep.py:34,158"
+  },
+  {
+   "key": "paper BEVFormer-S (val, R101-DCN, base size)",
+   "value": "NDS 0.448 / mAP 0.375 / mAVE 0.802 vs BEVFormer 0.517 / 0.416 / 0.394; defined as TSA turned into vanilla self-attention without history BEV",
+   "source": "arXiv 2203.17270 Table 2 (p.8), section 4.2 (p.7), section 3.4 (p.6)"
+  },
+  {
+   "key": "official install requirements",
+   "value": "torch 1.9.1+cu111, torchvision 0.10.1, mmcv-full 1.4.0, mmdet 2.14.0, mmsegmentation 0.14.1, mmdet3d v0.17.1 (source), detectron2, timm 0.6.13, numpy 1.19.5, numba 0.48.0, setuptools 59.5.0",
+   "source": "docs/install.md:15-48"
+  },
+  {
+   "key": "local env torch",
+   "value": "1.9.1+cu111, CUDA 11.1, cuDNN 8005, arch_list sm_37..sm_86 (no PTX), cuda available, 4x RTX 4090 (cc 8.9), driver 535.183.01",
+   "source": "/home/jeongtae/miniconda3/envs/bevformer/bin/python -c; nvidia-smi"
+  },
+  {
+   "key": "local env mmcv",
+   "value": "mmcv-full 1.4.0 (compiled with GCC 10.5 / NVCC 11.1), mmcv.ops import OK, _ext.so contains sm_86 SASS + sm_86 PTX",
+   "source": "python -c; cuobjdump --list-elf/--list-ptx"
+  },
+  {
+   "key": "local env mmdet/mmseg/mmdet3d",
+   "value": "mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1 imported from site-packages/mmdet3d-0.17.1-py3.8-linux-x86_64.egg (all 11 CUDA extensions sm_86 SASS+PTX)",
+   "source": "python -c; cuobjdump"
+  },
+  {
+   "key": "local env yapf",
+   "value": "0.43.0 (incompatible with mmcv 1.4.0 Config.pretty_text; needs 0.40.1)",
+   "source": "importlib.metadata; mmcv/utils/config.py:496; yapf_api.py:171-175"
+  }
+ ],
+ "environment": "Official stack (docs/install.md:15-48): Python 3.8, torch 1.9.1+cu111 / torchvision 0.10.1, mmcv-full 1.4.0, mmdet 2.14.0, mmsegmentation 0.14.1, mmdet3d v0.17.1 built from source, plus detectron2, timm 0.6.13, numpy 1.19.5, numba 0.48.0 and setuptools 59.5.0. The released small model was trained with torch 1.9.0+cu111 on 8x A100.\n\nLocal env /home/jeongtae/miniconda3/envs/bevformer (verified, read-only):\n- Python 3.8.20.\n- torch 1.9.1+cu111: CUDA 11.1, cuDNN 8.0.5, get_arch_list sm_37 to sm_86 with no PTX. torch.cuda.is_available() is True and it sees 4 GPUs (RTX 4090, compute capability 8.9, driver 535.183.01). torchvision 0.10.1+cu111.\n- mmcv-full 1.4.0, compiled locally with GCC 10.5 and NVCC 11.1. mmcv.ops imports, and the ms_deform_attn and modulated_deform_conv kernels are present. Its _ext.so contains sm_86 SASS and sm_86 PTX.\n- mmdet 2.14.0 and mmseg 0.14.1.\n- mmdet3d 0.17.1 is imported from /home/jeongtae/miniconda3/envs/bevformer/lib/python3.8/site-packages/mmdet3d-0.17.1-py3.8-linux-x86_64.egg/mmdet3d/__init__.py. That egg was built from /home/jeongtae/mmdetection3d (tag v0.17.1) and is functionally the pristine release. All 11 of its CUDA extensions contain sm_86 SASS and PTX.\n- Other packages: detectron2 0.6+cu111, fvcore 0.1.5.post20221221, iopath 0.1.9, timm 0.6.13, einops 0.8.1, numpy 1.19.5, numba 0.48.0, nuscenes-devkit 1.0.9, setuptools 59.5.0, tensorboard 2.19.0, Pillow 10.4.0, opencv-python 4.12.0.88, yapf 0.43.0.\n- /usr/local/cuda points to cuda-11.1. GPU peer-to-peer is reported as Chipset-Not-Supported for every pair, so NCCL goes through the host. GPU0 and GPU1 are on NUMA node 0, GPU2 and GPU3 on node 1.\n\nRTX 4090 (sm_89) assessment:\n- Expected to work, but not proven. Torch and every custom op ship sm_86 cubins. Those are binary-compatible with sm_89, and the custom ops also include PTX. No CUDA kernel was launched during this check, only version prints and device queries.\n- cuDNN 8.0.5 and cuBLAS 11.1 predate Ada, so speed may be suboptimal.\n- Blockers:\n  - yapf 0.43.0 breaks mmcv 1.4.0 Config.dump and pretty_text, so tools/train.py crashes at line 180. Pinning yapf==0.40.1 fixes it.\n  - The pretrain checkpoint at /home/jeongtae/mmdetection3d/r101_dcn_fcos3d_pretrain.pth is truncated and must be re-downloaded.",
+ "license": "The BEVFormer repo is Apache-2.0 (its LICENSE file). It bundles code derived from mmdet3d (Apache-2.0), DETR3D and DD3D. Check those licenses before publishing a vendored copy. PD-BEV code at /home/jeongtae/Gen2E/PD-BEV is a separate repo (Generalizable-BEV); I did not check its license.",
+ "upstream_base": "fundamentalvision/BEVFormer, branch master, HEAD 66b65f3a1f58caf0507cb2a971b9c0e7f842376c (2024-05-03). The v1 code dates from the init commit 68e6af5 (2022-06-25). Later changes to it:\n- 5a25c8b and a81b42a (2022-06-27): fp16 and batch size > 1.\n- 2a6a04e (2022-09-01): sample-queue construction.\n- 2f37d0d and 001242c (2023-07-27): V2 release, the shift_ref_2d.clone() fix, and fp16 for the encoder.\n\nThe released bevformer_small_epoch_24 checkpoint and log date from 2022-06-18, before 2a6a04e and the clone fix. Both differences affect temporal mode only.\n\nThe framework is mmdet3d v0.17.1: it uses MVXTwoStageDetector, NuScenesDataset, LoadMultiViewImageFromFiles and DefaultFormatBundle3D. The plugin layout, multi-view transforms, NMSFreeCoder and HungarianAssigner3D come from DETR3D. The local mmdet3d is /home/jeongtae/mmdetection3d at v0.17.1 (f1107977), with uncommitted edits in mmdet3d/datasets/nuscenes_dataset.py that are not part of the installed egg.\n\nEvidence: the git history of the clone, a whitespace-insensitive diff of encoder.py between init and HEAD, the environment header of the official log, and a diff of the installed egg against v0.17.1.",
+ "sources": [
+  "https://github.com/fundamentalvision/BEVFormer (master @ 66b65f3a1f58caf0507cb2a971b9c0e7f842376c), cloned to /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevformer/BEVFormer",
+  "https://github.com/zhiqi-li/storage/releases/download/v1.0/bevformer_small_epoch_24.log (downloaded to /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevformer/logs/bevformer_small_epoch_24.log)",
+  "https://github.com/zhiqi-li/storage/releases/download/v1.0/r101_dcn_fcos3d_pretrain.pth (HTTP HEAD only: content-length 225215819)",
+  "arXiv 2203.17270 (BEVFormer paper), pp. 5-11: sections 3.4, 3.6, 4.2 and Tables 1, 2, 5, 6",
+  "arXiv 2410.13864 (UniDrive, ICLR 2025) abstract",
+  "/home/jeongtae/miniconda3/envs/bevformer (read-only python -c version prints; cuobjdump on mmcv/_ext and the mmdet3d egg extensions)",
+  "/home/jeongtae/mmdetection3d (v0.17.1 checkout f1107977: git status/diff, loading.py, nuscenes_dataset.py, checkpoint byte and opcode inspection)",
+  "/home/jeongtae/Gen2E/PD-BEV (EnVision-Research/Generalizable-BEV @ c2995d1: README.md, configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py, mmdet3d/models/detectors/pcbev.py, mmdet3d/models/necks/view_transformer_pc.py, mmdet3d/datasets/pipelines/loading_UDA.py), read-only",
+  "/home/jeongtae/tcar_bevdet/TCAR_README.md and tools/data_converter/tcar_converter.py (read-only)",
+  "nvidia-smi (GPU list, topology, peer-to-peer status)"
+ ]
+}

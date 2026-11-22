@@ -1,0 +1,565 @@
+{
+ "topic": "BEVDepth base codebase for Gen2E baselines (PD-BEV, UDGA, UniDrive, CoIn3D): PD-BEV internal BEVDet vs upstream BEVDet branches vs tcar_bevdet vs Megvii BEVDepth",
+ "summary_md": "# Which codebase to use as the BEVDepth base (Gen2E baselines)\n\nAll claims come from reading code and comparing git blobs. I did not run any training or test code. I printed package versions in the two conda envs. I read the metadata of two checkpoints with `pickletools`, which does not unpickle. Clones are in `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevdepth/`: `BEVDet` with worktrees `wt_master`, `wt_dev2.0`, `wt_dev2.1`, `wt_dev3.0`, plus `MegviiBEVDepth`, `CoIn3D` and `UniDrive`.\n\n## TL;DR\n* **Recommendation: start a new git repo from upstream BEVDet `dev3.0` at commit `26144be` (2024-07-04).** This is the same commit that two of your codebases are built on:\n  * your `tcar_bevdet`: 517 files are byte-identical to it, and it includes the `58c2587` fix;\n  * the official CoIn3D code: 339 of 388 files in its `BEVDet/` folder are identical to it.\n* **Single-frame BEVDepth needs only a config on dev3.0:** use `BEVDepth4D` with `num_adj=0`. Your tcar_bevdet already does this for depth-KD (`configs/bevdet/bevdet-r50-tcar-depthkd.py:6,96-97`, class at `bevdet.py:1535-1541`).\n* **The model code works for any camera count.** `N` comes from tensor shapes and `bev_pool_v2` is rank-based. A grep of the dev2.0, dev3.0 and tcar model/dataset/ops code found no reshape hardcoded to 6.\n* **What is left is data, evaluation and porting:**\n  * a multi-rig nuScenes-format dataset modelled on `TcarDataset` + `NuScenesEval_custom`;\n  * CoIn3D: transplant its diff (same base commit);\n  * PD-BEV: adapt from dev2.0 to dev3.0 (same framework, moderate work);\n  * UniDrive: add a virtual-camera pipeline transform;\n  * UDGA: re-implement from the BEVDet-master / mmdet3d 0.17.2 API (the largest job).\n* **Alternative:** BEVDet `dev2.0` at `2ae6a02`, the exact PD-BEV base, if reproducing PD-BEV exactly matters most. CoIn3D and the TCAR integration would then have to be moved back to it.\n* **Not recommended as the base:**\n  * The PD-BEV tree: cannot be installed as-is, has hardcoded 6-camera lists, and its BEVDepth baseline is a modified virtual-depth model with a depth-label bug.\n  * BEVDet `master` (v1, mmdet3d 0.17.2): deprecated. Only UDGA lives there.\n  * Megvii BEVDepth: built on pytorch-lightning, so every method would have to be rewritten.\n\n## Where each codebase comes from (verified by matching file blobs)\n\n| Codebase | Base | Evidence |\n|---|---|---|\n| PD-BEV (`/home/jeongtae/Gen2E/PD-BEV`, origin EnVision-Research/Generalizable-BEV, HEAD `c2995d1`) | BEVDet **dev2.0 @ `2ae6a02`** (2023-03-13, dev2.0 tip) | Best score among all dev2.0/2.1/3.0 commits: 467 of 914 tracked files identical (next best 466). Under `mmdet3d/`, only 16 files differ and 17 are new. `view_transformer.py` and `bevdet.py` differ only by an `mlp_channels` argument and `img_metas` passthrough. |\n| tcar_bevdet (`/home/jeongtae/tcar_bevdet`, no `.git`) | BEVDet **dev3.0 @ `26144be`** | 517 files identical. Contains the `58c2587` fix (`bda.view(B,1,4,4)`). `README.md` is the tip version plus 2 Korean lines (`README.md:67-68`: work happens in the `bevdet-trt:22.07` (`bevdet_dev_v2`) container on the Lecun server). |\n| CoIn3D official (github kwong292521/CoIn3D master `b53019d`, 2026-07-08) | BEVDet **dev3.0 @ `26144be`** | 339 of 388 files identical. 17 modified (view_transformer, bevdet, loading, transforms_3d, nuscenes_dataset, centerpoint_head, fpn, custom_3d, apis, tools) and 32 added (`prior_utils.py`, `nvs_gs3d.py` hook, `gaussian3d_kernel/*`, `configs/bevdet/bevdet-r50-4d-depth-CoIn3D/*`). |\n| UDGA (`/home/jeongtae/Gen2E/UDGA`) | BEVDet **master** (mmdet3d 0.17.2), last code commit `b17b6e8` (2022-08-15) | Unchanged files are identical to mmdet3d 0.17.x. The modified files are closest to `b17b6e8`. `requirements_udga.txt`: torch 1.9.0+cu111, mmcv-full 1.4.0, mmdet 2.25.1, mmseg 0.25.0, mmdet3d 0.17.2. |\n| UniDrive official (github ywyeli/UniDrive `c73f887`) | MIT-HAN BEVFusion fork (`project/mmdet3d` with `vtransforms`) | `project/docker/Dockerfile`: torch 1.10.1/cu113, mmcv-full 1.4.0, mmdet 2.20.0. MIT licence. I did not find the file that implements the virtual-camera projection. |\n\n## Candidate (i): BEVDet inside PD-BEV\n\n**Versions**\n* mmdet3d 1.0.0rc4 (`mmdet3d/version.py:3`).\n* Required ranges: mmcv 1.5.2\u20131.7.0, mmdet 2.24\u20133.0, mmseg 0.20\u20131.0 (`mmdet3d/__init__.py:21-22,31-32,40-41`).\n\n**The BEVDepth baseline config `configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py`** (also `-lyft`, `-da`):\n* Model: `BEVDepth_DG` + `LSSViewTransformerBEVDepth_DG` (lines 51-79).\n* Input 384\u00d7704 (line 21); depth range `[1,100,1]`, i.e. 99 bins (line 44); BEV grid \u00b151.2 m at 0.8 m = 128\u00d7128; `numC_Trans` 80.\n* R50 (out_indices 2,3) + CustomFPN(512); DepthNet with ASPP and without DCN.\n* CBGS, AdamW 2e-4, 24 epochs, EMA (lines 252-269).\n* Pretrained weights point to `/mnt/cfs/.../resnet50-0676ba61.pth` (line 55).\n\n**This is not vanilla BEVDepth:**\n* The DepthNet predicts *virtual* depth normalised to a reference focal length of 450 px: `self.c` at `view_transformer_pc.py:510`, and virtual\u2192real conversion in `get_lidar_coor` at `:512-535`.\n* The camera MLP takes 31 inputs, adding the actual (resized) intrinsics (`:566-594`).\n* LiDAR depth labels are virtual depth (`loading_UDA.py:686-707`, `self.c` at `:684`).\n* **Bug:** `get_downsampled_gt_depth` replaces empty pixels with 1e5 and then takes `torch.max` over each 16\u00d716 patch (`view_transformer_pc.py:632-635`). Upstream uses `torch.min` (dev2.0 `view_transformer.py:629`). As written, only patches where every pixel has a LiDAR return get a label, so the baseline is effectively trained with no depth supervision. This effect is inferred from the code; confirm by logging `fg_mask.sum()`.\n\n**PD-BEV itself (`PCBEV_DG`)**\n* Its depth supervision comes from box-centre virtual depth (`pcbev.py:142-143`, `ann_maps_2d` built in `Load3DBoxesHeatmap` at `loading_UDA.py:809-992`), not from LiDAR.\n* `PCBEV_DG.simple_test` cannot run: `extract_feat` calls `extract_img_feat(img, img_metas)`, but the method's signature is `(points, img, img_metas, gt_bboxes_3d, ...)` (`pcbev.py:62-69`). So evaluation has to go through the `BEVDepth_DG` config, which is what README step 6 does.\n\n**Other configs and code**\n* Hidden configs under `mmdet3d/.mim/configs/bevdet/bevdepth-r50{,-cbgs}.py` define a vanilla single-frame `BEVDepth` (256\u00d7704, depth `[1,60,0.5]`). The non-CBGS one notes mAP 0.3212 / NDS 0.3627. These configs no longer run in this tree, because PD-BEV changed the upstream `PointToMultiViewDepth` (`loading.py:741` expects an 8-element tuple; `:782` uses camera-1 intrinsics for every camera; `:788` ignores ego2global).\n* A generic single-frame `BEVDepth` class for the dev2.0 API exists at `bevdepth.py:12-70`.\n\n**Hardcoded camera assumptions**\n* `PrepareImageInputs_UDA.get_inputs` ignores `data_config['cams']` and hardcodes six names for either the `CAM_FRONT` or the `Camera_Front` naming (`loading_UDA.py:492-501`; copies at `:1735-1742` and `:2466-2473`).\n* Fallback DeepAccident intrinsics are hardcoded (`:517-524`).\n* Test-time crop is random (`:260`).\n* `Cam_Num=6` (`img_aux.py:275,616`) and `reshape(-1, 6, ...)` (`pcbev.py:374`).\n* `get_bev_coor` hardcodes the 0.8 m grid (`view_transformer_pc.py:364`).\n\n**Hygiene problems**\n* No `setup.py`, although the README says `pip install -e .`.\n* A compiled `.so` and `.o` files are tracked in git.\n* `tools/test.py:245` dumps results to a hardcoded `/mnt/cfs` path.\n* `tools/train.py:120` turns on `set_detect_anomaly(True)`, which slows training.\n* `models/backbones/__init__.py:12-13` imports timm, which is not installed in the `tcar_bevdet` env.\n* `NuScenesDataset.evaluate` now takes `save_path` as a positional argument (`nuscenes_dataset.py:559-561`).\n* No LICENSE file.\n\n**Compatibility:** same framework as dev2.x. It is not compatible with the UDGA overlay.\n\n## Candidate (ii): upstream BEVDet branches\n\n| Branch (tip) | mmdet3d | BEVDepth configs | Notes |\n|---|---|---|---|\n| master `4d85acf` (code `b17b6e8`) | 0.17.2 (mmcv 1.3.8\u20131.4.0) | **single-frame** `configs/bevdepth/bevdepth-r50.py` (`ViewTransformerLSSBEVDepth`, `loss_depth_weight=100`, 256\u00d7704, dbound `[1,60,1]`, numC 64, CBGS, 24 epochs with steps [16,22], mmdet3d LiDAR-frame infos); also `bevdepth4d-r50(-fp16)` | README:25 reports mAP 33.3 / NDS 40.6 (\"third-party implementation\"). This is UDGA's family. |\n| dev2.0 `2ae6a02` | 1.0.0rc4 | `bevdet4d-r50-depth-cbgs.py`: `BEVDepth4D` with **8** adjacent frames (`multi_adj_frame_id_cfg=(1,9,1)`, line 44), 256\u00d7704, depth `[1,60,0.5]`, 20 epochs. No single-frame config. | PD-BEV base. Image inputs are `(imgs, rots, trans, intrins, post_rots, post_trans)` relative to `ego_cam='CAM_FRONT'` (`loading.py:812`); `bda` is 3\u00d73. |\n| dev2.1 `f71858d` | 1.0.0rc4 | `bevdet-r50-4d-depth-cbgs.py`: `BEVDepth4D` with 1 adjacent frame (line 89), `aspp_mid_channels=96`, 20 epochs; header reports NDS 0.4842; also 4dlongterm and stereo | Same API as dev2.0 (adds stereo and occupancy). |\n| dev3.0 `26144be` (default branch) | 1.0.0rc4 | Same 4d-depth config, using `LoadAnnotations`+`BEVAug` and `bevdetv3` infos | API change: inputs are `(imgs, sensor2egos, ego2globals, intrins, post_rots, post_trans, bda4x4)`. The key ego is the ego pose of the first camera (`bevdet.py:81`). `LoadAnnotationsBEVDepth` was removed. Adds SID and DAL. |\n\nOn dev2.x/3.0, single-frame BEVDepth works by setting `num_adj=0`. `BEVDet4D.prepare_inputs` computes `N // num_frame` (dev2.0 `bevdet.py:369-387`, dev3.0 `:408-459`), and `BEVDepth4D.forward_train` adds the depth loss (dev3.0 `:524-572`).\n\n**Camera handling on the dev line**\n* Camera lists come from `data_config['cams']` (`choose_cams`, dev3.0 `loading.py:932-941`).\n* Augmentation is sampled per camera from the real image H/W (`:943-978`, `:1083`).\n* Hardcoded `CAM_FRONT` as the ego camera: `nuscenes_dataset.py:141`, `create_data_bevdet.py:54-56`.\n* The converter hardcodes six camera types (`nuscenes_converter.py:197-204`).\n* Evaluation uses the official `NuScenesEval` with nuScenes split names (`nuscenes_dataset.py:452-466`).\n* `accelerate=True` caches the geometry, so it must stay off for multi-rig (dev2.0 `view_transformer.py:31-33,246-250`).\n\n## Candidate (iii): tcar_bevdet (read-only)\n\n**Base:** dev3.0 `26144be`. 29 files modified and about 36 added (the added count includes copies under `.mim`).\n\n**How TCAR is integrated**\n* `mmdet3d/datasets/tcar_dataset.py:20-216`: `TcarDataset(NuScenesDataset)`, registered in `datasets/__init__.py:10,49`.\n  * Overrides the class list and the eval config, setting class range to 50 m (`:24-33`).\n  * `_build_ann_infos` takes `gt_box_frame`, default `'lidar'` (`:26,35-69`).\n  * `_format_bbox` converts LiDAR\u2192ego (`:107-163`).\n  * `_evaluate_single` uses `tools.tcar.tcar.TestCar` together with `NuScenesEval_custom(..., data_infos=self.data_infos)` (`:165-216`).\n* `mmdet3d/datasets/tcar_eval.py:745-860` (ported from the BEVFormer custom eval): it filters by the sample tokens of `data_infos` (`:802-827`). This avoids the split names hardcoded in the devkit. It contains a TCAR-specific heuristic that decides whether a box is in ego or global coordinates (`:733-741`).\n* `mmdet3d/utils/coord_transform.py`, `tools/tcar/{tcar.py,splits.py,utils.py}`.\n* `tools/data_converter/tcar_converter.py`:\n  * TCAR stores `calibrated_sensor` inverted relative to nuScenes (`:217-220`, `:354-357`).\n  * The six camera names are hardcoded (`:254-261`).\n  * Boxes are converted from ego to LiDAR frame (`:283`).\n* `tools/create_data_bevdet_tcar.py:51-86` injects `ann_infos` in the LiDAR frame.\n\n**Configs**\n* `configs/bevdet/*tcar*.py`. For example, `bevdet-r50-4d-depth-cbgs-tcar.py`: 4 classes, six 1080\u00d71920 cameras, 1 adjacent frame, `WandbLoggerHook`.\n* `bevdet-r50-tcar-depthkd.py` is the single-frame KD variant.\n\n**Extras**\n* `BEVDetAux`, `BEVDepth4DDepthKD`, `LoadTeacherDepthFromNPZ` (`loading.py:851`).\n* Options for when the EMA hook saves checkpoints, and `SaveSelectedEpochsHook`.\n* A workaround for yapf `FormatCode` in `tools/train.py:179-186,210-215` (needed because yapf 0.43 is installed).\n* A size guard in `lss_fpn` and `--measure-fps` in `test.py`.\n\n**Checkpoint metadata** (read with `pickletools`)\n* Both checkpoints were trained 2026-02-13/14: PyTorch 1.10.0, mmcv 1.5.3, mmdet3d 1.0.0rc4, 4\u00d7 RTX 4090.\n* `env_info` says Ubuntu 20.04, gcc 9.4, nvcc 11.7. The host is Ubuntu 22.04 with gcc 10.5 and `/usr/local/cuda` pointing to 11.1. So the runs were probably done in the `bevdet_dev_v2` container (image `bevdet-trt:22.07`) on this host, which is named `lecun`. This is an inference.\n\n**Is it a good template for a new multi-rig dataset?** For the dataset and evaluation pattern, yes. Things to change:\n* Discover cameras per sample or per rig instead of a fixed list.\n* Use the official nuScenes devkit instead of `TestCar`, if the new data follows the nuScenes convention.\n* Choose one key-ego frame that matches the BEV frame. tcar trains on LiDAR-frame GT while dev3.0 builds BEV features in the key-ego frame. That only works if lidar2ego is close to identity, which I could not check.\n* Remove the WandB hooks; `wandb` is not installed in the conda env.\n* Add the BEVDet Apache-2.0 LICENSE.\n* Keep `ckpts/` and `data/` (about 1.4 GB) out of git.\n\n## Candidate (iv): Megvii BEVDepth (`d78c7b5`, 2023-01-17, MIT)\n\n**Framework**\n* pytorch-lightning 1.6.0 with torch 1.9.0 (`requirements.txt`).\n* mmdet3d v1.0.0rc4 is used only as a component library (README).\n\n**Single-frame setup** (`exps/nuscenes/base_exp.py:21-76,206,373-380`)\n* R50 + SECONDFPN, input 256\u00d7704, depth `d_bound [2,58,0.5]` (112 bins), BEV 128\u00d7128.\n* lr 2e-4 per 64 images, weight decay 1e-7, `MultiStepLR [19,23]`, 24 epochs, no CBGS.\n* There are also CBGS and 2-frame experiments.\n\n**Camera and data assumptions**\n* The model handles any camera count (`base_lss_fpn.py:216,438,463`).\n* The data pipeline uses its own info format: `gen_info.py:23-26` hardcodes 6 cameras.\n* Source H/W are fixed in the config (`nusc_det_dataset.py:322`).\n* GT is in the mean ego pose of the cameras (`:547-552`).\n* The evaluator assumes nuScenes `v1.0-trainval` (`det_evaluators.py:42,83-93`).\n\n**Verdict:** useful as a reference for hyper-parameters and numbers, but a poor base. PD-BEV, UDGA and CoIn3D would each need rewriting in Lightning.\n\n## Local environments (read-only check)\n\n**`tcar_bevdet` conda env**\n* Python 3.8.20.\n* torch 1.10.0+cu113; CUDA archs sm_37..sm_86, no sm_89, but sm_86 binaries run on sm_89.\n* mmcv-full 1.5.3, mmdet 2.25.1, mmseg 0.25.0.\n* mmdet3d is **not installed** (code runs from the source tree via `PYTHONPATH` in `dist_train.sh`).\n* nuscenes-devkit 1.1.10, numba 0.53.0, numpy 1.20.3, yapf 0.43.0.\n* Not installed: timm, wandb.\n\n**`open-mmlab` conda env**\n* torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0, mmseg 0.14.1.\n* mmdet3d 0.17.1 via egg-link to `/home/jeongtae/mmdetection3d` (`f110797`, the official v0.17.1).\n* numba 0.48.0, numpy 1.19.5.\n\n**Host and container**\n* Host `nvcc` defaults to 11.1. Compile `bev_pool_v2` with `CUDA_HOME=/usr/local/cuda-11.3` and `TORCH_CUDA_ARCH_LIST=8.6`.\n* The `bevdet-trt:22.07` image matches upstream's `docker/Dockerfile` (TensorRT 22.07 / CUDA 11.7, torch 1.10.0, mmcv-full 1.5.3).\n\n## Plan for each port, assuming the dev3.0 base\n\n1. **New repo** from upstream `26144be`, keeping git history and the LICENSE. Bring over the generic tcar patches. Add a single-frame BEVDepth config (`BEVDepth4D`, `num_adj=0`, `with_prev=False`, `multi_adj_frame_id_cfg=(1,1,1)`, `PrepareImageInputs(sequential=False)`, no `SequentialControlHook`) and, optionally, a 2-frame config.\n2. **Multi-rig dataset and evaluation:**\n   * a generalised converter (per-rig camera lists, a documented key-ego frame);\n   * a `Gen2ENuScenesDataset` modelled on `TcarDataset`;\n   * per-rig test configs and a loop that evaluates every rig.\n3. **CoIn3D:** transplant the 17+32 files. It is already dev3.0 and `BEVDepth4D` 2-frame, 384\u00d7704, 24 epochs. It needs `diff-gaussian-rasterization` and heavy preprocessing in `data_preprocess`.\n4. **PD-BEV:** copy `pcbev.py`, `BEVDepth_DG`, `view_transformer_pc.py`, `img_aux.py`, the UDA pipeline classes, and `LoadAnnotationsBEVDepth` (3\u00d73 bda). Then:\n   * handle the tuple that dev3.0's `image_encoder` returns (`bevdet.py:43-60`);\n   * use the config's camera list everywhere;\n   * remove `Cam_Num=6` and `reshape(-1, 6)`;\n   * remove the timm, `/mnt/cfs` and anomaly-detection lines;\n   * decide whether to keep the `torch.max` behaviour.\n5. **UniDrive:** implement the virtual-camera image warp and parameter replacement as a pipeline step before `PrepareImageInputs`.\n6. **UDGA:** re-implement the BEVSSL/adapter modules from master's LiDAR-frame API (`LoadMultiViewImageFromFiles_BEVDet`, `bev_pool` v1, `update_img2lidar` BDA) on dev3.0. Its Samsung licence restricts redistribution.\n\n## Main risks\n* PD-BEV fidelity issues: the depth-label bug, the virtual-depth focal reference of 450 px, and box-centre-only depth supervision.\n* Camera-name and ego-camera assumptions: `CAM_FRONT` and `cams[0]`.\n* Evaluation hardcodes in the devkit: split names, `LIDAR_TOP`, and dropping GT boxes that contain no LiDAR points.\n* TCAR frame questions.\n* With 4 GPUs at batch 8 the total is 32, versus upstream's 64. Ten-camera rigs need about 1.7\u00d7 the memory.\n* Toolchain: host CUDA defaults to 11.1; yapf 0.43.\n* Licences: PD-BEV has none, UDGA is proprietary, and CoIn3D's own additions have no explicit licence.\n\nThese are covered in detail in `bugs_or_gaps`, `rig_assumptions` and `open_questions`.\n",
+ "components": [
+  {
+   "name": "BEVDet dev-line core model (upstream dev3.0 @26144be)",
+   "files": [
+    "mmdet3d/models/detectors/bevdet.py (BEVDet :15-219, BEVDet4D :271-521, BEVDepth4D :524-572)",
+    "mmdet3d/models/necks/view_transformer.py (LSSViewTransformer :18-, DepthNet :512-, LSSViewTransformerBEVDepth :737-833)",
+    "mmdet3d/ops/bev_pool_v2/*",
+    "mmdet3d/models/necks/fpn.py (CustomFPN)",
+    "mmdet3d/models/backbones/resnet.py (CustomResNet)",
+    "mmdet3d/models/necks/lss_fpn.py (FPN_LSS)",
+    "mmdet3d/models/dense_heads/centerpoint_head.py"
+   ],
+   "role": "LSS forward view transform with a camera-aware DepthNet and LiDAR depth loss. Single-frame BEVDepth = BEVDepth4D with num_adj=0. Camera count comes from tensor shapes.",
+   "method_specific": false,
+   "port_notes": "Recommended base. Keep accelerate=False for multi-rig. The DepthNet MLP takes 27 inputs: raw intrinsics + post-aug + bda + 3x4 sensor2ego (view_transformer.py:745-766). Key ego = ego pose of cams[0] (bevdet.py:81)."
+  },
+  {
+   "name": "BEVDet dev-line data pipeline and dataset (dev3.0)",
+   "files": [
+    "mmdet3d/datasets/pipelines/loading.py (PointToMultiViewDepth :720-802, PrepareImageInputs :859-1158, LoadAnnotations :1162, BEVAug :1177)",
+    "mmdet3d/datasets/nuscenes_dataset.py (get_data_info :213-278, _format_bbox :345-, _evaluate_single :432-)",
+    "tools/create_data_bevdet.py",
+    "tools/data_converter/nuscenes_converter.py"
+   ],
+   "role": "BEVDet-format infos ('cams' dict + 'ann_infos' in CAM_FRONT ego frame), multi-camera loading with per-camera augmentation, LiDAR\u2192image depth maps, official nuScenes evaluation.",
+   "method_specific": false,
+   "port_notes": "Camera list comes from data_config['cams']. The converter hardcodes 6 cameras (nuscenes_converter.py:197-204) and CAM_FRONT as ego (create_data_bevdet.py:54-56, nuscenes_dataset.py:141). Official devkit evaluation needs split names, so replace it with the tcar_eval pattern."
+  },
+  {
+   "name": "TCAR dataset/eval integration (tcar_bevdet)",
+   "files": [
+    "/home/jeongtae/tcar_bevdet/mmdet3d/datasets/tcar_dataset.py",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/datasets/tcar_eval.py",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/utils/coord_transform.py",
+    "/home/jeongtae/tcar_bevdet/tools/data_converter/tcar_converter.py",
+    "/home/jeongtae/tcar_bevdet/tools/create_data_bevdet_tcar.py",
+    "/home/jeongtae/tcar_bevdet/tools/create_data_tcar.py",
+    "/home/jeongtae/tcar_bevdet/tools/tcar/{tcar.py,splits.py,utils.py}",
+    "/home/jeongtae/tcar_bevdet/configs/bevdet/*tcar*.py"
+   ],
+   "role": "Template for a non-nuScenes dataset in nuScenes format: NuScenesDataset subclass, class/eval-config override, custom NuScenesEval filtered by data_infos tokens, custom devkit (TestCar).",
+   "method_specific": false,
+   "port_notes": "Generalise: discover cameras per sample/rig (tcar_converter.py:254-261 is fixed to 6). Use the official NuScenes devkit if the new data uses the sensor\u2192ego calibrated_sensor convention (TCAR is inverted: :217-220, :354-357). Fix one key-ego GT frame (TCAR trains on LiDAR-frame GT, create_data_bevdet_tcar.py:51-86). Drop the TCAR ego/global heuristic (tcar_eval.py:733-741) and the WandB hooks."
+  },
+  {
+   "name": "tcar_bevdet generic utilities",
+   "files": [
+    "/home/jeongtae/tcar_bevdet/tools/train.py (:179-186, :210-215 yapf FormatCode workaround)",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/core/hook/ema.py (save_epochs/max_keep_ckpts)",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/core/hook/save_selected_epochs.py",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/models/necks/lss_fpn.py (size guard)",
+    "/home/jeongtae/tcar_bevdet/tools/test.py (--measure-fps)"
+   ],
+   "role": "Infrastructure fixes and conveniences already proven with this stack.",
+   "method_specific": false,
+   "port_notes": "Cherry-pick into the new repo. The yapf workaround is required with yapf 0.43 (tcar_bevdet env) and mmcv 1.5.3."
+  },
+  {
+   "name": "tcar_bevdet DepthKD / Aux methods (user's own)",
+   "files": [
+    "/home/jeongtae/tcar_bevdet/mmdet3d/models/detectors/bevdet.py (BEVDetAux :259, BEVDepth4DDepthKD :918, BEVDepthDepthKD :1535-1541)",
+    "/home/jeongtae/tcar_bevdet/mmdet3d/datasets/pipelines/loading.py (LoadTeacherDepthFromNPZ :851, img_aug_params :1276-1370)"
+   ],
+   "role": "Depth distillation from an offline/DA3 teacher and a 2D auxiliary head. BEVDepthDepthKD shows that single-frame BEVDepth via num_adj=0 works on dev3.0.",
+   "method_specific": true,
+   "port_notes": "Not needed for the baselines. Keep out of the Gen2E baseline repo unless wanted."
+  },
+  {
+   "name": "PD-BEV test-time model = BEVDepth_DG (virtual-depth BEVDepth)",
+   "files": [
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/detectors/bevdepth.py (BEVDepth :12-70, BEVDepth_DG :73-154)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/view_transformer_pc.py (DepthNet 31-dim :172-235, LSSViewTransformerBEVDepth_DG :503-661)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/pipelines/loading_UDA.py (PrepareImageInputs_UDA :175-672, PointToMultiViewDepth_UDA :679-803, LoadPointsFromFile_UDA :37-)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/pipelines/loading.py (LoadAnnotationsBEVDepth :1421-1503)",
+    "/home/jeongtae/Gen2E/PD-BEV/configs/bevdet_our/bevdepth-r50-cbgs-pc-{nus,lyft,da}.py"
+   ],
+   "role": "PD-BEV's 'BEVDepth' baseline, and the architecture used to evaluate PD-BEV checkpoints (README step 6). Depth is focal-normalised virtual depth with reference f=450 px, and intrinsics are added to the MLP input.",
+   "method_specific": true,
+   "port_notes": "On dev3.0: handle the tuple returned by image_encoder; keep PD-BEV's own pipeline tuple (rots/trans already relative to the key ego); carry over LoadAnnotationsBEVDepth (3x3 bda); replace the hardcoded camera names (loading_UDA.py:492-501). Decide on the torch.max depth-label bug (view_transformer_pc.py:632-635)."
+  },
+  {
+   "name": "PD-BEV training modules (PCBEV_DG / PCBEV_UDA)",
+   "files": [
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/detectors/pcbev.py",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/view_transformer_pc.py (LSSViewTransformer_pc :243-498)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/img_aux.py (Img_Aux :143, Img_Aux_Dy :502, BEV_Aux :778)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/pipelines/loading_UDA.py (Load3DBoxesHeatmap :809-)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/dense_heads/centerpoint_head.py (bev_loss, loss_pseudo, yaw_weight)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/dataset_wrappers.py (CBGSDataset flag, CBGSDataset_UDA)",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/apis/train.py (shuffle flag)",
+    "/home/jeongtae/Gen2E/PD-BEV/configs/PDBEV/*.py"
+   ],
+   "role": "Perspective debiasing: 2D heatmap/box auxiliaries, BEV\u2192PV re-projection with extrinsic augmentation, depth supervision from box-centre virtual depth. The UDA variant adds pseudo-label consistency.",
+   "method_specific": true,
+   "port_notes": "Only DG mode matters for Gen2E. Remove Cam_Num=6 (img_aux.py:275,616) and reshape(-1, 6) (pcbev.py:374, UDA only). The hardcoded 0.8 m grid (view_transformer_pc.py:364) and depth_range=52 (:358) must follow grid_config. simple_test is broken, so evaluate via the BEVDepth_DG config."
+  },
+  {
+   "name": "PD-BEV datasets/converters",
+   "files": [
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/{nuscenes_dataset_DA.py,lyft_dataset_DA.py,DeepAccident_dataset.py,UDA_DA_Nus_dataset.py,UDA_DA_LYFT_dataset.py,CARLA_dataset.py,shift_dataset.py}",
+    "/home/jeongtae/Gen2E/PD-BEV/tools/{Lyft_converter.py,Deepaccident_converter.py}",
+    "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/.mim/tools/create_data_bevdet*.py"
+   ],
+   "role": "Adapters for the Lyft/DeepAccident/nuScenes DA experiments (Camera_* naming).",
+   "method_specific": false,
+   "port_notes": "Not needed for Gen2E; use the new multi-rig dataset. Note shift_dataset imports pandas and the backbones import timm."
+  },
+  {
+   "name": "BEVDet master BEVDepth (v1, mmdet3d 0.17.2)",
+   "files": [
+    "wt_master/configs/bevdepth/bevdepth-r50.py",
+    "wt_master/mmdet3d/models/necks/view_transformer.py (ViewTransformerLiftSplatShoot, SELikeModule, ViewTransformerLSSBEVDepth)",
+    "wt_master/mmdet3d/models/detectors/bevdet.py (BEVDepth)",
+    "wt_master/mmdet3d/datasets/pipelines/loading.py (LoadMultiViewImageFromFiles_BEVDet, PointToMultiViewDepth)"
+   ],
+   "role": "The only upstream single-frame BEVDepth config. API family of the UDGA overlay.",
+   "method_specific": false,
+   "port_notes": "Deprecated. Uses LiDAR-frame mmdet3d infos and BDA folded into rots/trans (update_img2lidar), so incompatible with the dev line. Reference only, for UDGA re-implementation."
+  },
+  {
+   "name": "UDGA overlay",
+   "files": [
+    "/home/jeongtae/Gen2E/UDGA/models/detectors/{bevssl.py,bevssl_unsupdepth.py,dgbev.py,bevdet_uda.py,bevdet_uda_ft.py,bevheight.py,bevdet.py}",
+    "/home/jeongtae/Gen2E/UDGA/models/necks/view_transformer.py (ViewTransformerLiftSplatShoot_SSL etc.)",
+    "/home/jeongtae/Gen2E/UDGA/models/utils/{adapter.py,peft_conv.py}",
+    "/home/jeongtae/Gen2E/UDGA/datasets/pipelines/loading.py",
+    "/home/jeongtae/Gen2E/UDGA/configs/udga/bevssl3sup_lyf_to_nus_cls1_d60_pc400_L1_extaug.py"
+   ],
+   "role": "UDGA method on BEVDet master (mmdet3d 0.17.2): self-supervised depth / adapters. The config uses 384x704, dbound [1,90,1], loss_depth_weight 100, 32 epochs.",
+   "method_specific": true,
+   "port_notes": "Needs re-implementation on the dev3.0 API (ego frame, LSSViewTransformerBEVDepth, BEVAug 4x4 bda, bev_pool_v2). The Samsung licence forbids redistribution without permission."
+  },
+  {
+   "name": "CoIn3D official (dev3.0-based)",
+   "files": [
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/prior_utils.py",
+    "CoIn3D/BEVDet/mmdet3d/core/hook/nvs_gs3d.py",
+    "CoIn3D/BEVDet/mmdet3d/gaussian3d_kernel/*",
+    "CoIn3D/BEVDet/mmdet3d/models/necks/view_transformer.py (modified)",
+    "CoIn3D/BEVDet/mmdet3d/models/detectors/bevdet.py (modified)",
+    "CoIn3D/BEVDet/mmdet3d/datasets/pipelines/loading.py (PrepareNVSMetaData etc.)",
+    "CoIn3D/BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/*.py",
+    "CoIn3D/data_preprocess/*",
+    "CoIn3D/third_party/{nuscenes-devkit,diff-gaussian-rasterization}"
+   ],
+   "role": "Spatial-prior feature modulation and camera-aware novel-view augmentation via 3D Gaussian splatting, on BEVDepth4D (2 frames, 384x704, 24 epochs).",
+   "method_specific": true,
+   "port_notes": "Same base commit as recommended, so it is a direct diff transplant (17 modified + 32 added files). Heavy data preprocessing; needs the 3DGS rasteriser build. Recommended env: torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0."
+  },
+  {
+   "name": "UniDrive official (BEVFusion-based)",
+   "files": [
+    "UniDrive/project/mmdet3d (BEVFusion fork, vtransforms/lss.py, depth_lss.py)",
+    "UniDrive/create/ (CARLA data generation)",
+    "UniDrive/detection_methods/bevfusion"
+   ],
+   "role": "Virtual camera space projection (ground-aware depth) applied before the perception model; multi-config CARLA benchmark.",
+   "method_specific": true,
+   "port_notes": "Framework-independent pre-processing: implement as a pipeline transform on the dev3.0 base. I did not find the file that implements the projection in the public repo."
+  },
+  {
+   "name": "Megvii BEVDepth (official, Lightning)",
+   "files": [
+    "MegviiBEVDepth/bevdepth/exps/nuscenes/base_exp.py",
+    "MegviiBEVDepth/bevdepth/models/base_bev_depth.py",
+    "MegviiBEVDepth/bevdepth/layers/backbones/base_lss_fpn.py",
+    "MegviiBEVDepth/bevdepth/layers/heads/bev_depth_head.py",
+    "MegviiBEVDepth/bevdepth/datasets/nusc_det_dataset.py",
+    "MegviiBEVDepth/bevdepth/evaluators/det_evaluators.py",
+    "MegviiBEVDepth/scripts/gen_info.py",
+    "MegviiBEVDepth/bevdepth/ops/voxel_pooling_{train,inference}"
+   ],
+   "role": "Reference implementation and numbers (e.g. single-frame 24e EMA; CBGS 2-key 20e mAP 0.3589 / NDS 0.4797).",
+   "method_specific": false,
+   "port_notes": "Not recommended as the base: Lightning-based, own info format, fixed source H/W, evaluator hardcoded to nuScenes v1.0-trainval."
+  }
+ ],
+ "data_requirements": [
+  "Rig data in nuScenes table format per split, loadable by the devkit: category, attribute, visibility, instance, sensor, calibrated_sensor, ego_pose, log, scene, sample, sample_data, sample_annotation, map. Empty tables are acceptable where unused. calibrated_sensor should follow the nuScenes sensor\u2192ego convention (TCAR uses the inverse and needs its TestCar devkit).",
+  "A LIDAR_TOP channel with point clouds for every sample. Needed for BEVDepth depth supervision (PointToMultiViewDepth / PointToMultiViewDepth_UDA), for PD-BEV's train pipeline (LoadPointsFromFile_UDA), and for the devkit's center distance (add_center_dist uses sample['data']['LIDAR_TOP']).",
+  "sample_annotation must carry num_lidar_pts (and num_radar_pts). nuScenes eval drops GT boxes with zero points, and BEVDet uses valid_flag (lidar+radar points > 0) for CBGS and annotation filtering.",
+  "Per camera: image file, cam_intrinsic, sensor2ego rotation/translation, ego2global per sample_data. Cameras of one rig may differ in resolution (dev3.0 PrepareImageInputs uses each image's real H/W). All cameras are resized/cropped to one input_size.",
+  "BEVDet-format info pkl (bevdetv3-style): token, scene_token, timestamp, lidar_path, lidar2ego_*, ego2global_*, cams{name: data_path, cam_intrinsic, sensor2ego_*, ego2global_*, sample_data_token}, gt_boxes/gt_names/gt_velocity/valid_flag (CBGS uses gt_names), and ann_infos = (9-D boxes [x,y,z,l,w,h,yaw,vx,vy] in the key-ego frame, labels).",
+  "A consistent key-ego definition across rigs. The dev3.0 model uses the ego pose of data_config['cams'][0], while create_data_bevdet/_format_bbox use 'CAM_FRONT'. Either every rig has CAM_FRONT and lists it first, or all of them switch to the LiDAR/vehicle ego pose.",
+  "Velocity GT (or zeros) for the 9-D CenterHead targets and the AVE metric.",
+  "For temporal BEVDepth4D / CoIn3D: prev/next linking within scenes (and optional sweeps). Single-frame BEVDepth does not need them.",
+  "Per-rig test sets for R1, R1-c6, R1-c10, R1-f, R1-r, R1-t and R2\u2013R9, each with its own data_config['cams'] list (N fixed within a dataset so batches collate).",
+  "PD-BEV DG: source-domain (R1) labels only. 2D heatmaps/ann maps are computed on the fly from 3D boxes. UDA mode would also need unlabeled target data.",
+  "CoIn3D: extra preprocessed assets from data_preprocess/ (meshes, rendered dense depth, instance models, ego/key masks, inpainted images), a 'meta_data' root and '*_sync+raw.pkl' infos.",
+  "ImageNet ResNet-50 weights. PD-BEV's '/mnt/cfs/.../resnet50-0676ba61.pth' is the torchvision ResNet-50 file, so 'torchvision://resnet50' is equivalent."
+ ],
+ "rig_assumptions": [
+  {
+   "assumption": "Six camera names hardcoded; data_config['cams'] ignored (CAM_FRONT* or Camera_Front* families only).",
+   "location": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/pipelines/loading_UDA.py:492-501 (copies :1735-1742, :2466-2473)",
+   "impact": "Rigs without CAM_FRONT/Camera_Front fail with UnboundLocalError on cam_names. 10-camera rigs silently use 6 cameras. Affects PD-BEV training and the BEVDepth_DG evaluation."
+  },
+  {
+   "assumption": "Cam_Num=6 default and reshape(-1, 6, C, H, W).",
+   "location": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/img_aux.py:275,616; /home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/detectors/pcbev.py:374",
+   "impact": "Breaks PD-BEV UDA (and any reuse of tensor_split) for N\u22606. Derive N from tensors."
+  },
+  {
+   "assumption": "Virtual depth normalised to a reference focal length of 450 px (in resized-image pixels).",
+   "location": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/view_transformer_pc.py:257,510; loading_UDA.py:684,819",
+   "impact": "Part of the PD-BEV method (focal invariance). Interacts with R1-f focal variants and with rigs whose focal lengths after resize differ strongly from 450 px. Keep constant for a faithful port."
+  },
+  {
+   "assumption": "Fallback intrinsics of DeepAccident cameras when cam_intrinsic is missing.",
+   "location": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/datasets/pipelines/loading_UDA.py:517-524",
+   "impact": "Silent wrong intrinsics if a new dataset omits cam_intrinsic."
+  },
+  {
+   "assumption": "BEV voxel size 0.8 m and depth range 52 bins hardcoded in the PD-BEV PV re-projection.",
+   "location": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/models/necks/view_transformer_pc.py:358,364",
+   "impact": "Breaks or silently mis-indexes if grid_config changes."
+  },
+  {
+   "assumption": "Ego camera named 'CAM_FRONT'.",
+   "location": "upstream dev3.0 mmdet3d/datasets/nuscenes_dataset.py:141 (_format_bbox :367-370); tools/create_data_bevdet.py:54-56; dev2.0 mmdet3d/datasets/pipelines/loading.py:812; PD-BEV loading_UDA.py:182,493,498",
+   "impact": "KeyError for rigs without CAM_FRONT (e.g. UniDrive-like 4- or 5-camera rigs). GT frame and prediction\u2192global conversion depend on it."
+  },
+  {
+   "assumption": "Key ego = ego pose of the first camera in data_config['cams'].",
+   "location": "upstream dev3.0 mmdet3d/models/detectors/bevdet.py:81 (BEVDet4D :422)",
+   "impact": "The BEV frame changes with camera ordering. It must match the GT frame (CAM_FRONT ego in create_data_bevdet). Small on nuScenes; can be large on rigs where cameras are captured at different poses."
+  },
+  {
+   "assumption": "Six camera channels hardcoded in the info converters.",
+   "location": "upstream dev3.0 tools/data_converter/nuscenes_converter.py:197-204; /home/jeongtae/tcar_bevdet/tools/data_converter/tcar_converter.py:254-261; MegviiBEVDepth/scripts/gen_info.py:23-26",
+   "impact": "10-camera or non-nuScenes-named rigs are not converted. Iterate the sample's CAM_* channels or a per-rig list."
+  },
+  {
+   "assumption": "Same number of cameras for all samples in a batch (DataContainer stacking).",
+   "location": "BEVDet collate of img_inputs (all dev-line branches)",
+   "impact": "Mixed-rig training batches need grouping by rig. Per-rig evaluation is fine."
+  },
+  {
+   "assumption": "One input_size/frustum for all cameras; bottom-anchored crop.",
+   "location": "dev2.0 mmdet3d/models/necks/view_transformer.py:75-97 (create_frustum); dev3.0 loading.py:943-978 (sample_augmentation)",
+   "impact": "Cameras with different aspect ratios get a different vertical field of view after resize+crop, which differs across rigs."
+  },
+  {
+   "assumption": "accelerate=True caches the frustum\u2192BEV mapping (assumes fixed intrinsics/extrinsics).",
+   "location": "dev2.0 mmdet3d/models/necks/view_transformer.py:31-33,246-250",
+   "impact": "Must stay False for multi-rig and variable-N evaluation."
+  },
+  {
+   "assumption": "Camera-aware DepthNet MLP uses raw intrinsics + 3x4 sensor2ego with BN1d statistics from training.",
+   "location": "dev3.0 mmdet3d/models/necks/view_transformer.py:745-766 (BatchNorm1d(27) :534)",
+   "impact": "Inherent BEVDepth sensitivity to unseen focal lengths and extrinsics (part of what Gen2E measures); not a bug."
+  },
+  {
+   "assumption": "Official nuScenes split names and LIDAR_TOP channel in evaluation.",
+   "location": "dev3.0 mmdet3d/datasets/nuscenes_dataset.py:452-466 (NuScenesEval + eval_set_map)",
+   "impact": "New datasets with other scene names fail in load_gt. Use the NuScenesEval_custom(data_infos=...) pattern (tcar_eval.py:745-860)."
+  },
+  {
+   "assumption": "GT boxes in the LiDAR frame for TCAR, while BEV features are in the camera key-ego frame.",
+   "location": "/home/jeongtae/tcar_bevdet/tools/create_data_bevdet_tcar.py:51-86 and tcar_converter.py:283 vs dev3.0 bevdet.py:81",
+   "impact": "Correct only if TCAR lidar2ego \u2248 identity (not verifiable here). Do not copy this convention for the new dataset."
+  },
+  {
+   "assumption": "Fixed source H, W (from config) for all cameras in Megvii's augmentation.",
+   "location": "MegviiBEVDepth/bevdepth/datasets/nusc_det_dataset.py:322",
+   "impact": "Wrong resize/crop for rigs with other or mixed resolutions."
+  },
+  {
+   "assumption": "Depth bins [1,60] m (dev line) vs [1,100] m (PD-BEV) vs [2,58] m (Megvii) vs [1,90] m (UDGA Lyft config).",
+   "location": "dev3.0 configs/bevdet/bevdet-r50-4d-depth-cbgs.py:82; PD-BEV configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:44; Megvii base_exp.py:32; UDGA config :41",
+   "impact": "Objects beyond the max depth are not lifted. Must be unified across methods for a fair baseline table."
+  }
+ ],
+ "port_plan": [
+  {
+   "target": "Gen2E BEVDepth base repo = upstream BEVDet dev3.0 @26144be + single-frame BEVDepth config + generic tcar patches",
+   "steps": [
+    "Create a new git repo from https://github.com/HuangJunJie2017/BEVDet at 26144be (keep history and the Apache-2.0 LICENSE; add 'upstream' remote). Do not copy /home/jeongtae/tcar_bevdet wholesale: it has no .git, no LICENSE, and contains ckpts/data/outputs.",
+    "Add .gitignore for data/, ckpts/, work_dirs/, outputs*/, build/, *.so, *.egg-info, __pycache__.",
+    "Cherry-pick generic tcar_bevdet patches: tools/train.py yapf FormatCode workaround (:179-186, :210-215), EMA save options + SaveSelectedEpochsHook, lss_fpn size guard, optional test.py --measure-fps. Drop WandbLoggerHook from configs (wandb not installed in the tcar_bevdet env).",
+    "Add configs/gen2e/bevdepth-r50-*.py: type='BEVDepth4D', num_adj=0, with_prev=False, multi_adj_frame_id_cfg=(1,1,1), PrepareImageInputs(sequential=False), LoadAnnotations+BEVAug, PointToMultiViewDepth(downsample=1), LSSViewTransformerBEVDepth(depthnet_cfg=dict(use_dcn=False, aspp_mid_channels=96)), img_bev_encoder_backbone.numC_input=numC_Trans, no SequentialControlHook. Optionally add a 2-frame variant (CoIn3D setting).",
+    "Build bev_pool_v2 in an approved env (existing bevdet-trt:22.07 container 'bevdet_dev_v2', or a clone of the tcar_bevdet conda env) with CUDA_HOME=/usr/local/cuda-11.3 and TORCH_CUDA_ARCH_LIST='8.6+PTX'. Host default /usr/local/cuda is 11.1.",
+    "Optional sanity run on nuScenes and compare with references: BEVDet master BEVDepth-R50 mAP 33.3 / NDS 40.6; PD-BEV authors' non-CBGS single-frame mAP 0.3212 / NDS 0.3627 (mmdet3d/.mim/configs/bevdet/bevdepth-r50.py header)."
+   ],
+   "effort": "M",
+   "risks": [
+    "Environment creation needs your approval (no installs done here).",
+    "Batch 4x8=32 vs upstream 64: decide whether to keep lr 2e-4.",
+    "yapf 0.43 / mmcv 1.5.3 incompatibility if the workaround is missing."
+   ]
+  },
+  {
+   "target": "Multi-rig nuScenes-format dataset + evaluator (R1, R1-c6/c10/f/r/t, R2\u2013R9)",
+   "steps": [
+    "Write a converter generalising dev3.0 nuscenes_converter/create_data_bevdet and tcar_converter: iterate the sample's CAM_* channels (or a per-rig list), store all cameras, write ann_infos in one documented key-ego frame, keep gt_names/valid_flag/gt_velocity for CBGS and filters.",
+    "Add Gen2ENuScenesDataset(NuScenesDataset) modelled on TcarDataset: class mapping, class_range override, _format_bbox inverse transform matching the chosen key ego, _evaluate_single with a cleaned NuScenesEval_custom(data_infos=...) using the official NuScenes devkit (or a thin subclass if tables deviate).",
+    "Unify the ego-camera policy: replace hardcoded 'CAM_FRONT' (nuscenes_dataset.py:141, create_data_bevdet.py:54-56) and cams[0] (bevdet.py:81) by a configurable ego source (preferably the LiDAR/vehicle ego pose), or enforce CAM_FRONT-first in every rig.",
+    "Per-rig test configs (data_config['cams'], Ncams, src_size) plus a script that evaluates one checkpoint on all rig test sets and tabulates mAP/NDS.",
+    "Unit-check projection: overlay projected GT boxes and LiDAR depth on images for one sample per rig (6- and 10-camera)."
+   ],
+   "effort": "M",
+   "risks": [
+    "Devkit requires LIDAR_TOP and num_lidar_pts in GT; synthetic data may lack radar counts.",
+    "Frame mismatches (lidar vs ego) silently degrade mAP.",
+    "10-camera rigs need about 1.7x memory: reduce samples_per_gpu."
+   ]
+  },
+  {
+   "target": "CoIn3D on the BEVDepth base (same dev3.0 commit)",
+   "steps": [
+    "Diff CoIn3D/BEVDet against 26144be (17 modified + 32 added files, already listed) and transplant: prior_utils.py, nvs_gs3d hook, gaussian3d_kernel, PrepareNVSMetaData and related pipeline changes, view_transformer/bevdet/centerpoint_head/fpn modifications, configs/bevdet/bevdet-r50-4d-depth-CoIn3D/*.",
+    "Build third_party/diff-gaussian-rasterization (and decide on CoIn3D's modified nuscenes-devkit vs the official one).",
+    "Run data_preprocess (meshes, dense depth, inpainting, instance models) for R1 training data.",
+    "Switch to the shared baseline spec (single-frame vs 2-frame, input size) per your decision."
+   ],
+   "effort": "L",
+   "risks": [
+    "Heavy preprocessing and GPU rendering cost.",
+    "CoIn3D prefers torch 1.12.1/mmcv 1.6.0 vs the tcar env's torch 1.10.0/mmcv 1.5.3 (both within mmdet3d 1.0.0rc4 limits).",
+    "No explicit licence for CoIn3D's own additions (only BEVDet's Apache-2.0 LICENSE inside BEVDet/)."
+   ]
+  },
+  {
+   "target": "PD-BEV on the BEVDepth base (dev2.0 \u2192 dev3.0 adaptation)",
+   "steps": [
+    "Copy model modules: pcbev.py (PCBEV_DG), bevdepth.py (BEVDepth_DG), view_transformer_pc.py (LSSViewTransformer_pc, LSSViewTransformerBEVDepth_DG, DepthNet-31), img_aux.py (Img_Aux, Img_Aux_Dy, BEV_Aux), CenterHead additions (bev_loss, loss_pseudo, yaw_weight), CBGSDataset flag passthrough and apis/train.py shuffle flag. Register under unique names (they use register_module(force=True)).",
+    "Copy pipeline classes: PrepareImageInputs_UDA, PointToMultiViewDepth_UDA, LoadPointsFromFile_UDA, Load3DBoxesHeatmap, and LoadAnnotationsBEVDepth (3x3 bda; removed in dev3.0). Keep PD-BEV's own img_inputs tuple (PCBEV_DG/BEVDepth_DG override extract_img_feat, so dev3.0 prepare_inputs is bypassed).",
+    "Adapt to dev3.0: image_encoder now returns (x, stereo_feat) (dev3.0 bevdet.py:43-60). Check the base LSSViewTransformer __init__ kwargs (sid/collapse_z defaults are fine) and voxel_pooling_v2.",
+    "Generalise rigs: use data_config['cams'] and a configurable ego_cam in the three Prepare* classes (loading_UDA.py:492-501 etc.); remove Cam_Num=6 / reshape(-1, 6); derive the 0.8 m grid and depth_range from grid_config; drop the DeepAccident intrinsics fallback.",
+    "Clean up: remove the timm context_cluster imports, /mnt/cfs paths (tools/test.py:245, configs), set_detect_anomaly(True) (tools/train.py:120), and the evaluate(save_path) signature change.",
+    "Decide (open question) whether to keep the BEVDepth_DG torch.max depth-label behaviour, then train PCBEV_DG on R1 and evaluate with the BEVDepth_DG config on all rigs."
+   ],
+   "effort": "M",
+   "risks": [
+    "Fidelity drift vs the paper when fixing bugs or changing APIs.",
+    "Virtual-depth f_ref=450 px and box-centre-only depth supervision differ from the 'BEVDepth with LiDAR depth' baseline row.",
+    "DG config uses samples_per_gpu=4, 23 epochs, yaw_aug \u00b10.4 rad, which may differ from the shared baseline schedule."
+   ]
+  },
+  {
+   "target": "UniDrive on the BEVDepth base",
+   "steps": [
+    "Locate the virtual-camera projection and configuration-optimisation code in https://github.com/ywyeli/UniDrive (BEVFusion fork; not found by filename in this check) or re-implement from the ICLR 2025 paper.",
+    "Implement as a pipeline transform before PrepareImageInputs: warp each real camera image to the shared virtual cameras using ground-aware depth, replace intrinsics/extrinsics with the virtual ones, and make the virtual rig a config.",
+    "Run the virtual-configuration optimisation offline on R1 (and possibly the R2\u2013R9 calibrations, depending on the protocol)."
+   ],
+   "effort": "M",
+   "risks": [
+    "Official code may not contain the full method; re-implementation ambiguity.",
+    "Using target-rig calibrations in the optimisation could leak target information in a DG protocol."
+   ]
+  },
+  {
+   "target": "UDGA on the BEVDepth base (re-implementation from BEVDet master / mmdet3d 0.17.2)",
+   "steps": [
+    "Inventory UDGA's method parts: BEVSSL3_unsup / BEVSSL3 / SSLAdapter (models/detectors/bevssl*.py), ViewTransformerLiftSplatShoot_SSL / *_Adapter / *_PEFT (models/necks/view_transformer.py), models/utils/adapter.py and peft_conv.py, pipeline changes in datasets/pipelines/loading.py, lyft_yawaug.py.",
+    "Map the master API (LoadMultiViewImageFromFiles_BEVDet, LiDAR-frame img_inputs with BDA folded into rots/trans via update_img2lidar, bev_pool v1, FPNForBEVDet/ResNetForBEVDet, loss_depth_weight=100) to dev3.0 (key-ego frame, BEVAug 4x4 bda, LSSViewTransformerBEVDepth, bev_pool_v2, CustomFPN/CustomResNet).",
+    "Optionally validate against the original by running UDGA in a 0.17.2 env (open-mmlab-like: torch 1.9, mmcv 1.4.0; note the env has mmdet 2.14.0 while UDGA lists 2.25.1).",
+    "Integrate with the shared BEVDepth spec and the multi-rig dataset."
+   ],
+   "effort": "XL",
+   "risks": [
+    "Semantic differences between frames (LiDAR vs ego) and depth parameterisations.",
+    "UDGA config targets UDA (lyft\u2192nus); its DG-only usage must be confirmed.",
+    "Samsung licence: no copying or redistribution without written permission. Public GitHub release is problematic."
+   ]
+  },
+  {
+   "target": "(Not recommended) Use the PD-BEV tree itself as the BEVDepth base",
+   "steps": [
+    "Add a setup.py from upstream dev2.0, remove tracked .so/.o, fix hardcoded paths, restore the upstream PointToMultiViewDepth for vanilla BEVDepth, fix the camera lists, then build the dataset and evaluation on top."
+   ],
+   "effort": "L",
+   "risks": [
+    "Inherits PD-BEV hacks (modified upstream classes, broken vanilla configs, missing licence).",
+    "CoIn3D and tcar (dev3.0) would need back-porting."
+   ]
+  },
+  {
+   "target": "(Not recommended) Megvii BEVDepth as the base",
+   "steps": [
+    "Rewrite PD-BEV, UDGA, CoIn3D and UniDrive into the Lightning exp/model structure, convert infos to Megvii's format, write a custom evaluator."
+   ],
+   "effort": "XL",
+   "risks": [
+    "Framework mismatch with every method; stale repository (last commit 2023-01-17); fixed H/W assumption."
+   ]
+  }
+ ],
+ "open_questions": [
+  "Base framework: start the BEVDepth line from upstream BEVDet dev3.0 @26144be (recommended; the base of both tcar_bevdet and the CoIn3D official code), or from dev2.0 @2ae6a02 (the exact PD-BEV base, easiest for PD-BEV, harder for CoIn3D/TCAR)?",
+  "Which BEVDepth defines the shared baseline row? (a) Single-frame vanilla BEVDepth (BEVDepth4D num_adj=0, LiDAR-supervised real depth), (b) 2-frame BEVDepth4D as used by CoIn3D, or (c) PD-BEV's BEVDepth_DG (virtual depth, 31-dim MLP)?",
+  "Shared hyper-parameters on 4x RTX 4090. Input 256x704 (BEVDet default) or 384x704 (PD-BEV, CoIn3D, UDGA)? Depth bins [1,60,0.5] or [1,100,1]? 20 or 24 epochs? CBGS and EMA on? Keep lr 2e-4 with total batch 32 (upstream assumes 64)?",
+  "PD-BEV fidelity: keep the BEVDepth_DG depth-label behaviour (torch.max at view_transformer_pc.py:635, effectively no LiDAR depth supervision) exactly as released, or fix it to torch.min?",
+  "PD-BEV fidelity: keep PD-BEV's box-centre-only virtual-depth supervision and f_ref=450 px as released, even though the Gen2E table calls it 'on BEVDepth (LiDAR depth supervision)'?",
+  "Gen2E dataset format: does it follow the exact nuScenes convention? Specifically: calibrated_sensor as sensor\u2192ego (TCAR is inverted), sample_annotation in global frame, a LIDAR_TOP channel with point clouds and num_lidar_pts for every rig, prev/next temporal links and sweeps, camera channel names per rig (is there always a CAM_FRONT? what are the 10-camera names?), image resolutions per camera?",
+  "Rig protocol: how many cameras does R1 use for training, and what exactly are R1-c6 / R1-c10 (6/10-camera variants of R1?) and R1-f / R1-r / R1-t (focal / rotation / translation changes)? How many cameras do R2\u2013R9 have? Is any target-rig calibration allowed at training time (matters for UniDrive's virtual-config optimisation)?",
+  "UDGA in the DG table: does UDGA need unlabeled target-rig data (its released config is lyft\u2192nuScenes UDA), or should it run in a source-only DG mode? Which of its variants (BEVSSL3_unsup etc.) should be ported?",
+  "Licensing for the planned GitHub release. PD-BEV (Generalizable-BEV) has no LICENSE; UDGA is Samsung proprietary (no redistribution without written permission); CoIn3D's own additions have no explicit licence. Should the repo be private, ship only patches/instructions for these, or will you ask the authors?",
+  "Runtime environment: train in the existing docker container 'bevdet_dev_v2' (image bevdet-trt:22.07; matches the TCAR checkpoint env_info), in a clone of the 'tcar_bevdet' conda env, or in a new env matching CoIn3D (torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0)? Creating or modifying envs needs your explicit approval.",
+  "TCAR: should TCAR support live in the Gen2E repo, or stay separate? Can you confirm whether TCAR's lidar2ego is near identity? tcar_bevdet trains on LiDAR-frame GT while the BEV features are in the camera key-ego frame.",
+  "Repo location and name: where should the new Gen2E BEVDepth repo be created (e.g. a new directory under /home/jeongtae/Gen2E)? Should upstream BEVDet history be preserved (recommended)?"
+ ],
+ "bugs_or_gaps": [
+  "PD-BEV BEVDepth_DG: get_downsampled_gt_depth replaces empty pixels with 1e5 and then takes torch.max per 16x16 patch (mmdet3d/models/necks/view_transformer_pc.py:632-635). Only fully covered patches get labels, so the BEVDepth baseline is effectively trained without LiDAR depth supervision (effect inferred; verify via fg_mask.sum()). Upstream uses torch.min (dev2.0 view_transformer.py:629).",
+  "PD-BEV PCBEV_DG/PCBEV_UDA.simple_test cannot run: extract_feat calls extract_img_feat(img, img_metas, **kwargs) but the signature is (points, img, img_metas, gt_bboxes_3d, gt_labels_3d, ...) and the return arity differs (pcbev.py:62-69, 211-215). Evaluation must use configs/bevdet_our/bevdepth-r50-cbgs-pc-*.py (BEVDepth_DG).",
+  "PD-BEV PrepareImageInputs_UDA (and _DG, _DG_woex) ignore data_config['cams'] and hardcode six camera names (loading_UDA.py:492-501, 1735-1742, 2466-2473).",
+  "PD-BEV hardcodes DeepAccident intrinsics as a fallback (loading_UDA.py:517-524) and uses a random crop at test time (loading_UDA.py:260; minor nondeterminism).",
+  "PD-BEV modified upstream PointToMultiViewDepth (loading.py:741 expects an 8-tuple, :782 uses camera-1 intrinsics for all cameras, :788 ignores ego2global). This breaks the vanilla single-frame BEVDepth configs shipped in mmdet3d/.mim/configs/bevdet/bevdepth-r50{,-cbgs}.py.",
+  "PD-BEV cannot be installed as released: no setup.py (README says pip install -v -e .); compiled build/*.so, *.o and mmdet3d/ops/bev_pool_v2/*.so tracked in git; tracked __pycache__.",
+  "PD-BEV hardcoded environment: tools/test.py:245 dumps outputs to /mnt/cfs/...; configs use pretrained='/mnt/cfs/algorithm/yunpeng.zhang/pretrained/resnet50-0676ba61.pth'; tools/train.py:120 enables torch.autograd.set_detect_anomaly(True), slowing every run.",
+  "PD-BEV mmdet3d/models/backbones/__init__.py:12-13 imports context_cluster modules that need timm, which is not installed in the tcar_bevdet env; mmdet3d.models import would fail (static inference).",
+  "PD-BEV NuScenesDataset.evaluate signature changed to evaluate(results, save_path, ...) (nuscenes_dataset.py:559-561), incompatible with standard eval hooks.",
+  "PD-BEV Cam_Num=6 defaults (img_aux.py:275,616) and reshape(-1, 6, ...) (pcbev.py:374); hardcoded 0.8 m grid (view_transformer_pc.py:364) and depth_range=52 (view_transformer_pc.py:358).",
+  "PD-BEV Lyft BEVDepth config: the head defines a single 'car' task while class_names lists 9 classes (configs/bevdet_our/bevdepth-r50-cbgs-pc-lyft.py). Apparently intended for car-only evaluation (inferred).",
+  "tcar_bevdet: GT ann_infos in the LiDAR frame (create_data_bevdet_tcar.py:51-86) while dev3.0 BEV features are in the key-ego frame (bevdet.py:81). Correct only if TCAR lidar2ego \u2248 identity (unverified).",
+  "tcar_bevdet: configs use WandbLoggerHook but wandb is not installed in the tcar_bevdet conda env.",
+  "tcar_bevdet: TCAR_README says create_data_tcar.py produces tcar_infos_temporal_*.pkl, but the configs consume bevdet-tcar_infos_temporal_*.pkl produced by create_data_bevdet_tcar.py (documentation mismatch).",
+  "tcar_bevdet: no LICENSE file (upstream Apache-2.0 dropped) and no git history; ckpts/ and data/tcar/ hold about 1.4 GB of checkpoints.",
+  "Upstream dev line: 'CAM_FRONT' hardcoded as ego camera for GT and result conversion (nuscenes_dataset.py:141,367-370; create_data_bevdet.py:54-56) while the dev3.0 model's key ego is cams[0] (bevdet.py:81). Small inconsistency on nuScenes; breaks rigs without CAM_FRONT.",
+  "Upstream dev line: no single-frame BEVDepth config on dev2.0/dev2.1/dev3.0 (only BEVDepth4D configs); a single-frame setup needs num_adj=0 or a small BEVDepth class.",
+  "Megvii BEVDepth: fixed source H/W in IDA (nusc_det_dataset.py:322), 6 hardcoded cameras in gen_info.py:23-26, evaluator hardcoded to nuScenes v1.0-trainval (det_evaluators.py:42,83-93).",
+  "Host toolchain: /usr/local/cuda points to CUDA 11.1 while torch is cu113. Compile extensions with CUDA_HOME=/usr/local/cuda-11.3. nvcc \u226411.7 cannot target sm_89, so use arch 8.6(+PTX).",
+  "UniDrive: I did not find the file implementing the virtual-camera projection in the public repo (BEVFusion fork); method availability needs confirming."
+ ],
+ "config_facts": [
+  {
+   "key": "PD-BEV upstream base",
+   "value": "BEVDet dev2.0 @2ae6a02 (2023-03-13): 467/914 tracked files identical; best of all dev2.0/2.1/3.0 commits",
+   "source": "blob match: /home/jeongtae/Gen2E/PD-BEV vs scratch clone BEVDet"
+  },
+  {
+   "key": "PD-BEV mmdet3d version / dependency ranges",
+   "value": "1.0.0rc4; mmcv 1.5.2\u20131.7.0, mmdet 2.24.0\u20133.0.0, mmseg 0.20.0\u20131.0.0",
+   "source": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/version.py:3; mmdet3d/__init__.py:21-22,31-32,40-41"
+  },
+  {
+   "key": "PD-BEV BEVDepth baseline model",
+   "value": "BEVDepth_DG + LSSViewTransformerBEVDepth_DG, R50(out 2,3)+CustomFPN(512), numC_Trans 80, DepthNet ASPP no-DCN, 31-dim MLP, virtual depth f_ref 450 px",
+   "source": "/home/jeongtae/Gen2E/PD-BEV/configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:51-79; view_transformer_pc.py:503-594"
+  },
+  {
+   "key": "PD-BEV BEVDepth baseline data/schedule",
+   "value": "input 384x704, depth [1,100,1] (99 bins), BEV \u00b151.2 m @0.8 m, z [-5,3], CBGS, AdamW 2e-4 wd 1e-2, 24 epochs, EMA, samples_per_gpu 8",
+   "source": "/home/jeongtae/Gen2E/PD-BEV/configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:14-45,230-269"
+  },
+  {
+   "key": "PD-BEV DG config",
+   "value": "PCBEV_DG, LSSViewTransformer_pc(downsample_from_ann=2), yaw_aug \u00b10.4 rad, samples_per_gpu 4, 23 epochs",
+   "source": "/home/jeongtae/Gen2E/PD-BEV/configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:19-44,58-107,255-286"
+  },
+  {
+   "key": "PD-BEV hidden vanilla single-frame BEVDepth",
+   "value": "BEVDepth + LSSViewTransformerBEVDepth, 256x704, depth [1,60,0.5]; non-CBGS variant notes mAP 0.3212 / NDS 0.3627",
+   "source": "/home/jeongtae/Gen2E/PD-BEV/mmdet3d/.mim/configs/bevdet/bevdepth-r50-cbgs.py, bevdepth-r50.py (header)"
+  },
+  {
+   "key": "Upstream dev2.0 BEVDepth config",
+   "value": "bevdet4d-r50-depth-cbgs.py: BEVDepth4D, 8 adjacent frames ((1,9,1)), 256x704, depth [1,60,0.5], 20 epochs; no single-frame BEVDepth config",
+   "source": "wt_dev2.0/configs/bevdet/bevdet4d-r50-depth-cbgs.py:21,37,44,47,265-266"
+  },
+  {
+   "key": "Upstream dev2.1/dev3.0 BEVDepth config",
+   "value": "bevdet-r50-4d-depth-cbgs.py: BEVDepth4D, 1 adjacent frame ((1,2,1)), aspp_mid_channels 96, 256x704, depth [1,60,0.5], CBGS, 20 epochs; mAP 0.3618 / NDS 0.4842 (align_after_view_transformation=False)",
+   "source": "wt_dev2.1/configs/bevdet/bevdet-r50-4d-depth-cbgs.py:25-44,66,82,89-94,119,310-311"
+  },
+  {
+   "key": "Upstream master single-frame BEVDepth",
+   "value": "configs/bevdepth/bevdepth-r50.py: mmdet3d 0.17.2, ViewTransformerLSSBEVDepth loss_depth_weight 100, 256x704, dbound [1,60,1], numC_Trans 64, CBGS, 24 epochs step [16,22]; README mAP 33.3 / NDS 40.6",
+   "source": "wt_master/configs/bevdepth/bevdepth-r50.py:15-74,227-259; wt_master/README.md:25"
+  },
+  {
+   "key": "Upstream branch tips",
+   "value": "master 4d85acf (last code b17b6e8 2022-08-15, mmdet3d 0.17.2); dev2.0 2ae6a02 (2023-03-13); dev2.1 f71858d (2023-05-08); dev3.0 26144be (2024-07-04, default HEAD); main 26989d4 (README only); checkpoint da4e4de",
+   "source": "git log on scratch clone BEVDet"
+  },
+  {
+   "key": "Upstream dev3.0 Docker env",
+   "value": "nvcr.io/nvidia/tensorrt:22.07-py3, torch 1.10.0, torchvision 0.11.0, CUDA 11.3 build, mmcv-full 1.5.3, mmdet 2.25.1, mmseg 0.25.0",
+   "source": "wt_dev3.0/docker/Dockerfile"
+  },
+  {
+   "key": "tcar_bevdet upstream base",
+   "value": "BEVDet dev3.0 @26144be (517 identical files; includes 58c2587; README = tip + 2 lines)",
+   "source": "blob match /home/jeongtae/tcar_bevdet vs scratch clone; /home/jeongtae/tcar_bevdet/README.md:67-68"
+  },
+  {
+   "key": "TcarDataset registry and evaluator",
+   "value": "DATASETS 'TcarDataset' (NuScenesDataset subclass) with NuScenesEval_custom(data_infos=...) and TestCar devkit",
+   "source": "/home/jeongtae/tcar_bevdet/mmdet3d/datasets/tcar_dataset.py:20-216; mmdet3d/datasets/__init__.py:10,49; mmdet3d/datasets/tcar_eval.py:745-860"
+  },
+  {
+   "key": "TCAR BEVDepth4D config",
+   "value": "bevdet-r50-4d-depth-cbgs-tcar.py: classes [car,truck,cyc,ped], 6 cams, src 1080x1920, input 256x704, 1 adjacent frame, bevdet-tcar_infos_temporal_{train,val}.pkl, WandbLoggerHook",
+   "source": "/home/jeongtae/tcar_bevdet/configs/bevdet/bevdet-r50-4d-depth-cbgs-tcar.py:1-157"
+  },
+  {
+   "key": "TCAR single-frame BEVDepth (KD)",
+   "value": "multi_adj_frame_id_cfg=(1,1,1), type='BEVDepthDepthKD', num_adj=0",
+   "source": "/home/jeongtae/tcar_bevdet/configs/bevdet/bevdet-r50-tcar-depthkd.py:6,96-97; mmdet3d/models/detectors/bevdet.py:1535-1541"
+  },
+  {
+   "key": "TCAR checkpoint metadata",
+   "value": "trained 2026-02-13/14; PyTorch 1.10.0, mmcv 1.5.3, mmdet3d 1.0.0rc4; 4x RTX 4090; env_info Ubuntu 20.04, gcc 9.4, NVCC 11.7, Python 3.8.20 (matches the bevdet-trt:22.07 container, not the host)",
+   "source": "pickletools parse of /home/jeongtae/tcar_bevdet/ckpts/bevdet-r50-tcar.pth and bevdet-r50-4d-depth-cbgs-tcar.pth (no unpickling)"
+  },
+  {
+   "key": "Megvii BEVDepth single-frame exp",
+   "value": "R50+SECONDFPN, 256x704, d_bound [2,58,0.5] (112 bins), BEV 128x128, output_channels 80, lr 2e-4 per 64 imgs, wd 1e-7, MultiStepLR [19,23], 24 epochs, no CBGS; framework pytorch-lightning 1.6.0 + torch 1.9.0 + mmdet3d 1.0.0rc4",
+   "source": "MegviiBEVDepth/bevdepth/exps/nuscenes/base_exp.py:21-76,206,221,373-380; requirements.txt; README.md"
+  },
+  {
+   "key": "CoIn3D official base and settings",
+   "value": "BEVDet dev3.0 @26144be (339/388 identical files); BEVDepth4D 1 adjacent frame, 384x704, depth [1,60,0.5], 24 epochs; torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0, mmseg 0.30.0",
+   "source": "github.com/kwong292521/CoIn3D master b53019d: README.md; BEVDet/configs/bevdet/bevdet-r50-4d-depth-CoIn3D/nuscenes-caronly.py:1,43,93,96,370"
+  },
+  {
+   "key": "UDGA overlay base and settings",
+   "value": "BEVDet master (mmdet3d 0.17.2, closest b17b6e8); torch 1.9.0+cu111, mmcv-full 1.4.0, mmdet 2.25.1, mmseg 0.25.0; config 384x704, dbound [1,90,1], loss_depth_weight 100, 32 epochs",
+   "source": "/home/jeongtae/Gen2E/UDGA/requirements_udga.txt; configs/udga/bevssl3sup_lyf_to_nus_cls1_d60_pc400_L1_extaug.py:19-22,41,50,74-76,291"
+  },
+  {
+   "key": "UniDrive official base",
+   "value": "MIT-HAN BEVFusion fork (project/mmdet3d with vtransforms); Docker torch 1.10.1 cu113, mmcv-full 1.4.0, mmdet 2.20.0; MIT licence",
+   "source": "github.com/ywyeli/UniDrive master c73f887: project/docker/Dockerfile, README.md"
+  },
+  {
+   "key": "Local env tcar_bevdet",
+   "value": "python 3.8.20, torch 1.10.0+cu113 (archs sm_37..sm_86), cudnn 8200, mmcv-full 1.5.3, mmdet 2.25.1, mmseg 0.25.0, mmdet3d not installed (source tree), spconv 2.1.21, nuscenes-devkit 1.1.10, numba 0.53.0, numpy 1.20.3, yapf 0.43.0, no timm/wandb",
+   "source": "/home/jeongtae/miniconda3/envs/tcar_bevdet/bin/python -c version prints"
+  },
+  {
+   "key": "Local env open-mmlab",
+   "value": "python 3.8.20, torch 1.9.1+cu111 (archs sm_37..sm_86), mmcv-full 1.4.0, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1 (egg-link /home/jeongtae/mmdetection3d @f110797), numba 0.48.0, numpy 1.19.5, no spconv",
+   "source": "/home/jeongtae/miniconda3/envs/open-mmlab/bin/python -c version prints"
+  },
+  {
+   "key": "Host toolchain",
+   "value": "hostname lecun, Ubuntu 22.04.1, gcc 10.5, driver 535.183.01, 4x RTX 4090, /usr/local/cuda -> cuda-11.1; toolkits 11.1/11.3/11.6/11.7/11.8/12.1/12.6; docker image bevdet-trt:22.07 with exited container bevdet_dev_v2",
+   "source": "readlink/nvcc/gcc/nvidia-smi/lsb_release/docker ps (read-only)"
+  }
+ ],
+ "environment": "Recommended stack for the BEVDepth line: mmdet3d 1.0.0rc4 (BEVDet dev3.0) with torch 1.10.0+cu113, mmcv-full 1.5.3, mmdet 2.25.1 and mmseg 0.25.0. This is upstream's Docker recipe and is identical to the local 'tcar_bevdet' conda env (python 3.8.20, nuscenes-devkit 1.1.10, numba 0.53.0, numpy 1.20.3, yapf 0.43.0; mmdet3d not installed and run from source via PYTHONPATH; timm and wandb missing).\n\nThe TCAR checkpoints' env_info (Ubuntu 20.04, gcc 9.4, nvcc 11.7) matches the 'bevdet-trt:22.07' docker image / 'bevdet_dev_v2' container on this host (lecun). The host itself is Ubuntu 22.04 with gcc 10.5, and /usr/local/cuda points to 11.1. So when compiling bev_pool_v2 or other extensions, set CUDA_HOME=/usr/local/cuda-11.3 and TORCH_CUDA_ARCH_LIST=8.6(+PTX). nvcc \u226411.7 cannot target sm_89; sm_86 cubins run on the RTX 4090.\n\nPD-BEV declares the same version ranges (mmcv 1.5.2\u20131.7.0, mmdet 2.24\u20133.0, mmseg 0.20\u20131.0), so it is compatible with this env once its timm import, missing setup.py and tracked .so are fixed.\n\nCoIn3D officially uses torch 1.12.1+cu116, mmcv-full 1.6.0, mmdet 2.28.0 and mmseg 0.30.0, plus its own nuscenes-devkit and diff-gaussian-rasterization. These are within mmdet3d 1.0.0rc4 limits, so a single newer env is possible.\n\nUDGA and BEVDet master need mmdet3d 0.17.2 with mmcv-full \u22641.4.0 (UDGA: torch 1.9.0+cu111, mmdet 2.25.1, mmseg 0.25.0). The local 'open-mmlab' env (torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0, mmseg 0.14.1, official mmdet3d 0.17.1) is close but not identical.\n\nMegvii BEVDepth needs torch 1.9.0 and pytorch-lightning 1.6.0; no local env has Lightning.\n\nNo environment was modified. Only version prints, metadata reads and docker/nvcc queries were run.",
+ "license": "BEVDet (all branches, including tcar_bevdet's origin): Apache-2.0. The tcar_bevdet copy lost its LICENSE file and it must be restored before publishing.\n\nPD-BEV / Generalizable-BEV: no LICENSE file in the repo, so default all-rights-reserved. Redistribution permission is unclear.\n\nUDGA (SAITPublic/UDGA): Samsung Electronics proprietary licence. Non-commercial research use only; no copying or distribution without express written permission. A public GitHub release of a UDGA port is problematic.\n\nCoIn3D: no root LICENSE. BEVDet/LICENSE is upstream BEVDet's Apache-2.0 (same blob 04adf5c); the licence of CoIn3D's own additions is unspecified.\n\nUniDrive: MIT (README).\n\nMegvii BEVDepth: MIT.\n\nmmdetection3d: Apache-2.0.",
+ "sources": [
+  "/home/jeongtae/Gen2E/PD-BEV (git origin https://github.com/EnVision-Research/Generalizable-BEV, HEAD c2995d1)",
+  "/home/jeongtae/Gen2E/UDGA (git origin https://github.com/SAITPublic/UDGA, HEAD 9198218)",
+  "/home/jeongtae/tcar_bevdet (read-only, no .git)",
+  "https://github.com/HuangJunJie2017/BEVDet (cloned to /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevdepth/BEVDet with worktrees wt_master, wt_dev2.0, wt_dev2.1, wt_dev3.0)",
+  "https://github.com/Megvii-BaseDetection/BEVDepth (cloned to /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevdepth/MegviiBEVDepth, d78c7b5)",
+  "https://github.com/kwong292521/CoIn3D (blobless clone at /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevdepth/CoIn3D, master b53019d)",
+  "https://github.com/ywyeli/UniDrive (blobless clone at /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/bevdepth/UniDrive, master c73f887)",
+  "https://arxiv.org/abs/2410.13864 (UniDrive, ICLR 2025)",
+  "https://iclr.cc/virtual/2025/poster/28636",
+  "https://gitee.com/xn1997/UniDrive",
+  "https://arxiv.org/abs/2603.05042 (CoIn3D, CVPR 2026)",
+  "https://openaccess.thecvf.com/content/CVPR2026/html/Kuang_CoIn3D_Revisiting_Configuration-Invariant_Multi-Camera_3D_Object_Detection_CVPR_2026_paper.html",
+  "/home/jeongtae/miniconda3/envs/tcar_bevdet and /home/jeongtae/miniconda3/envs/open-mmlab (version prints only)",
+  "/home/jeongtae/tcar_bevdet/ckpts/*.pth (metadata via pickletools, no unpickling)"
+ ],
+ "upstream_base": "PD-BEV = BEVDet dev2.0 @2ae6a02 (2023-03-13): 467/914 files identical, the best match over all dev2.0/2.1/3.0 commits; within mmdet3d/, only 16 files differ and 17 are added.\n\ntcar_bevdet = BEVDet dev3.0 @26144be (2024-07-04): 517 files identical; contains the 58c2587 fix; README equals the tip plus 2 lines. Its 29 modified and about 36 added files are the TCAR dataset/eval, depth-KD and utility changes.\n\nCoIn3D official = BEVDet dev3.0 @26144be: 339/388 files identical; 17 modified and 32 added.\n\nUDGA overlay = BEVDet master (mmdet3d 0.17.2) at its last code commit b17b6e8 (2022-08-15). Unchanged files are identical to mmdet3d 0.17.x; the modified files are closest to b17b6e8.\n\nMegvii BEVDepth = standalone pytorch-lightning project at d78c7b5 (2023-01-17), using mmdet3d 1.0.0rc4 as a library.\n\nUniDrive = MIT-HAN BEVFusion fork.\n\nRecommended new base: upstream BEVDet dev3.0 @26144be in a fresh repo with history preserved. Alternative: dev2.0 @2ae6a02."
+}

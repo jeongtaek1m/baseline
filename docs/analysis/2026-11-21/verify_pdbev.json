@@ -1,0 +1,190 @@
+{
+ "checks": [
+  {
+   "claim": "Upstream base is BEVDet dev2.0 HEAD 2ae6a02. Of PD-BEV's 258 tracked mmdet3d files: 223 identical, 16 modified, 19 PD-only, 0 upstream-only. dev2.1 HEAD 218/20/20/6, dev3.0 HEAD 211/27/20/15, master/checkpoint about 15 identical.",
+   "verdict": "confirmed",
+   "evidence": "I re-ran my own blob-hash comparison (git ls-tree) against every commit on every branch of the analyzer's BEVDet clone. 2ae6a02 is the unique best at 223/16/19/0. Other heads: f71858d 218/20/20/6, 26144be 211/27/20/15, 4d85acf 15/170/73/91, da4e4de 15/169/74/87. 2ae6a02 is an ancestor of dev2.1 and dev3.0 but not of master or main. Script: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev-verify/scripts/match.sh"
+  },
+  {
+   "claim": "2ae6a02 beats its child commits only on ops/bev_pool_v2/bev_pool.py. The next best (e57a515/c0d20ff) differ only in bev_pool.py.",
+   "verdict": "partly_wrong",
+   "evidence": "e57a515 (2023-02-02) and the other 222-match commits cf9d62d, d28b49f, 8a5f667, 6c75bb4 and 90369c3 are ANCESTORS of 2ae6a02 (git merge-base --is-ancestor). Against them the distinguishing file is bev_pool.py. c0d20ff (2023-04-27, dev2.1) is a DESCENDANT, and against it the distinguishing file is mmdet3d/core/post_processing/box3d_nms.py.",
+   "correction": "Both sides pin 2ae6a02: bev_pool.py rules out every older commit, and box3d_nms.py rules out the newer dev2.1 commits. The base identification itself is correct."
+  },
+  {
+   "claim": "File-level delta: 20 modified files (16 under mmdet3d plus tools/{train,test}.py and dist_{train,test}.sh), 34 added, create_data_bevdet.py and convert_bevdet_to_TRT.py removed, requirements/ identical to upstream.",
+   "verdict": "confirmed",
+   "evidence": "My joins reproduce the same 16 modified and 19 PD-only mmdet3d files. In tools/: 4 modified, 5 PD-only (Lyft/Deepaccident converters, launch_dist_job.py, dist_train_mpi.sh, run_dist.sh), 2 upstream-only. requirements/ blobs are identical. One small correction: mmdet3d/.mim/tools/create_data_bevdet.py is not byte-identical to upstream (it adds prints and comments out nuscenes_data_prep), but add_ann_adj_info is unchanged."
+  },
+  {
+   "claim": "PD-BEV checkpoints are evaluated with bevdet_our/bevdepth-r50-cbgs-pc-*.py, which builds BEVDepth_DG. PCBEV_*.simple_test is broken.",
+   "verdict": "confirmed",
+   "evidence": "README.md:59 and .mim/tools/test.sh:7-9 both evaluate with the -pc- configs. pcbev.py:64 calls extract_img_feat(img, img_metas, **kwargs), but the signature at :69 is (points, img, img_metas, gt_bboxes_3d, gt_labels_3d). It unpacks 4 values from a 6-tuple (:107). :76 reads kwargs['bev_aug'], which the DG test pipeline never collects (pdbev-r50-cbgs-NUS2X-dg.py:233). The weights load into the -pc- model because both view transformers build depth_net=DepthNet(...,31) (view_transformer_pc.py:255-256, 508-509)."
+  },
+  {
+   "claim": "BEVDepth_DG lifts with focal-normalised virtual depth (canonical f=450 px) and a 31-d camera vector, where upstream BEVDepth uses 27-d.",
+   "verdict": "confirmed",
+   "evidence": "view_transformer_pc.py:257 and 270-273/522-525 rescale frustum depth by k = f_eff/450. :394-422 builds the vector from 4 intrinsics, 4 post-augmentation intrinsics, 6 post-rot/trans entries, 5 BDA entries and 12 sensor2ego entries (31 total). Upstream 2ae6a02 view_transformer.py:472-475 uses BatchNorm1d(27) and Mlp(27)."
+  },
+  {
+   "claim": "The renderer samples the IFV transposed (view_transformer_pc.py:387).",
+   "verdict": "confirmed",
+   "evidence": "The BEV map is laid out (B,C,Y,X): bev_pool_v2 builds (B,Z,Y,X,C) (view_transformer.py:184-191) and permutes it to (B,C,Z,Y,X) (bev_pool.py:91). BEV_Aux keeps that layout and returns (B,80,4,Y,X) (img_aux.py:869-871). get_feature_Voxel2Frutums unpacks the tensor as (B,C,Height,X,Y) (:373) and indexes [Z, X_idx, Y_idx] (:387), with X_idx taken from coor[...,0], which is x (:383). CenterHead heatmaps are [y,x], and the BEV auxiliary-loss path (get_BEV_feats_from_voxel, :352-356) is not transposed. The IFV is therefore trained with two conflicting layouts. The code runs only because the 128x128 grid is square."
+  },
+  {
+   "claim": "CenterHead.bev_loss treats eq(0) pixels as positives, upsamples the task-0 target x2 bicubic, returns the loss unreduced, and covers car only.",
+   "verdict": "confirmed",
+   "evidence": "centerpoint_head.py:651-664: pos_weights = gts.eq(0) at :659; interpolate(scale_factor=2, mode='bicubic').squeeze(1) at :656; the heatmaps are cached in loss() at :697. The (B,256,256) map is averaged by mmdet _parse_losses. With align_corners=False the x2 resampling never lands exactly on a peak, so target values of 1 are rare. One constraint the report did not flag: squeeze(1) assumes task 0 has exactly one class (see missed)."
+  },
+  {
+   "claim": "The UDA consistency loss has the wrong sign, and all UDA configs set loss_flag='Focal'.",
+   "verdict": "partly_wrong",
+   "evidence": "pcbev.py:253-257 does return 1 - (pos+neg focal) whenever loss_flag != 'sim'. NUS2LYFT (:18), DA2NUS (:62) and DA2LYFT (:61) use 'Focal'. pdbev-uda-LYFT2NUS.py, however, sets loss_flag='Focal', thr=0.9 at :18-19 and then reassigns loss_flag='sim', thr=0.7 at :65-66, before model=dict reads them (:80-81). The later assignment wins.",
+   "correction": "The sign bug affects 3 of the 4 UDA configs. LYFT2NUS uses 1 - cosine similarity, which has the correct sign, and its thr is unused."
+  },
+  {
+   "claim": "Virtual-camera translation mismatch: rendering uses tran_aug \u2248 -R_aug^T\u00b7delta while the targets use t+delta. Rendered views are therefore placed roughly a camera-mount offset (about 1.5 m) away from their targets.",
+   "verdict": "partly_wrong",
+   "evidence": "The mismatch exists: loading_UDA.py:549-550 versus 538-543, consumed at 1024-1028. sensor2sensor_aug = (S^-1\u00b7E\u00b7S_aug)^-1, which has translation -R'^T\u00b7delta when E\u2248I. The rendering camera centre is therefore -R'^T\u00b7delta, close to the ego origin, while the target camera centre is t+delta. The per-sample offset is t + delta + R'^T\u00b7delta. Its mean is t, but it carries a random term of roughly 1.6 m std per axis (each component is a sum of two U(-2,2) terms). mlp_input_aug (pcbev.py:76-79) also receives this relative translation.",
+   "correction": "The bug is real, but the offset is random and often several metres. It is not a fixed offset of about one camera mount."
+  },
+  {
+   "claim": "In the -pc- BEVDepth baseline, torch.max in the depth downsampling disables LiDAR depth supervision.",
+   "verdict": "confirmed",
+   "evidence": "view_transformer_pc.py:632-635 replaces zeros with 1e5 and then takes the max. Upstream 2ae6a02 view_transformer.py:629 takes the min. With max, a 16x16 patch keeps a label only if all 256 pixels have a LiDAR return. PointToMultiViewDepth_UDA (loading_UDA.py:686-707) builds single-sweep sparse maps, so fg_mask (:607) is essentially always empty. This last step is inferred from LiDAR sparsity; I did not run it."
+  },
+  {
+   "claim": "PD-BEV's L_pg is a BCE on box-centre virtual depth (ann_maps_2d channel 2, stride 8, min-pooled x2). LiDAR depth is not used by PD-BEV's losses.",
+   "verdict": "confirmed",
+   "evidence": "pcbev.py:142-143. view_transformer_pc.py:434 takes channel 2 with a max over classes; :458-472 min-pools with downsample_from_ann=2. gt_depth and gt_depth_real are collected (config :211) but PCBEV_DG never reads them. The UDA path only splits gt_depth (pcbev.py:365-368) and never uses it."
+  },
+  {
+   "claim": "Six camera names are hard-coded and override data_config['cams']; choose_cams is never called; other camera names crash.",
+   "verdict": "confirmed",
+   "evidence": "loading_UDA.py:492-501 sets cam_names only when 'Camera_Front' or 'CAM_FRONT' is present. choose_cams (:227-236) is never called inside PrepareImageInputs_UDA. Every Gen2E/PCCR rig breaks this, assuming the infos key cameras by the rig ids. R1-R5, R7 and R8 have neither key, so the loop at :508 fails with UnboundLocalError. R6 and R9 contain CAM_FRONT but not CAM_FRONT_LEFT, so :509 fails with KeyError (/home/jeongtae/Gen2E/third_party/pccr/pccr/configs/rigs/*.json)."
+  },
+  {
+   "claim": "When cam_intrinsic is missing, the pipeline falls back to fixed intrinsics: fx=fy=1142.52 (560.17 for Camera_Back), cx=800, cy=450.",
+   "verdict": "confirmed",
+   "evidence": "loading_UDA.py:517-526"
+  },
+  {
+   "claim": "Rendering hard-codes 0.8 m xy cells and int(8/4)=2 m z-bins, and sums depth bins 1..51.",
+   "verdict": "confirmed",
+   "evidence": "view_transformer_pc.py:362-366 (0.8 m cells), :253 (revised_interval = int(grid_interval[2]/height_num)), :358-360 (range(1,52)). The int() truncation is also a latent bug; see missed."
+  },
+  {
+   "claim": "Load3DBoxesHeatmap uses camera 0's image size and pre-augmentation bounds. Real views use radius 1-5 with a 3x3 mask, virtual views radius 4-25 with a 2x3 mask. Each class gets a 7-channel ann map [du, dv, d_virtual, l, w, h, d_real].",
+   "verdict": "confirmed",
+   "evidence": "loading_UDA.py:869-876 and 1007-1014 (opens camera 0's image file), :898 and :1033 (validity checked against the original size), :933-940 versus :1067-1072, and :811-819 / :940-952 for the channel layout."
+  },
+  {
+   "claim": "NUS2X-dg config facts: PCBEV_DG; Img_Aux upsample [1,2,1], channels [256,128,70]; Img_Aux_Dy layers [2,1,1], upsample [2,1,1]; BEV_Aux [80,80,84] with height 4; downsample_from_ann 2; grid \u00b151.2/0.8, z [-5,3,8], depth [1,100,1]; input 384x704; perturbation 0.04/0.4/0.04 rad and \u00b12 m; samples_per_gpu 4; AdamW 2e-4, wd 0.01, clip 5; warm-up 20; step [24]; 23 epochs; EMA init_updates 10560.",
+   "verdict": "confirmed",
+   "evidence": "pdbev-r50-cbgs-NUS2X-dg.py:25-39, 47-52, 59-107, 184-188, 255-257, 278-294. One paper-vs-code mismatch the report did not list: the paper's nuScenes scale range is [-0.04, +0.11] (App. B.3), but the config uses (-0.06, 0.11) at :28."
+  },
+  {
+   "claim": "The -pc-nus baseline differs from PD-BEV in: perturbation \u00b10.01 (unused), LiDAR use_dim 5, samples_per_gpu 8, warm-up 200, 24 epochs, and LiDAR loading in the test pipeline.",
+   "verdict": "confirmed",
+   "evidence": "bevdepth-r50-cbgs-pc-nus.py:31-33 (rotations \u00b10.01; translation stays \u00b12 m), :52, :72-79, :173-175, :181-182, :192-197, :231, :258, :261."
+  },
+  {
+   "claim": "UDA_DA_Lyft behaviour: CBGS index pkls are hard-coded and missing; each epoch is 5000 samples; the sampler index is ignored; domains alternate per worker; target GT is used for filtering; each epoch replays the same samples.",
+   "verdict": "confirmed",
+   "evidence": "UDA_DA_LYFT_dataset.py:122-129, :133, :222-243, :720-729, :752 (random.randint ignores idx), :809-811 (alternation), :814-817 (target-GT filter). The replay inference holds by code reading: mmdet 2.25.1 worker_init_fn reseeds random and np.random every epoch (mmdet/datasets/builder.py:209-215), and persistent_workers defaults to False (mmdet3d/apis/train.py:224). Not executed."
+  },
+  {
+   "claim": "README errors: pip install -e . without setup.py, empty pkl link, 'c' placeholder, a nonexistent pcbev-uda config, and epoch_24.pth.",
+   "verdict": "confirmed",
+   "evidence": "README.md:17, 29, 44, 48, 59. git log --all -- LICENSE setup.py setup.cfg returns nothing. The DG config has max_epochs=23 (:286)."
+  },
+  {
+   "claim": "tools/test.py:245 dumps to /mnt/cfs unconditionally, so every test run on another machine crashes.",
+   "verdict": "partly_wrong",
+   "evidence": "The dump is unconditional and runs on every rank. mmcv 1.5.3 HardDiskBackend.put calls mkdir_or_exist on the parent directory (mmcv/fileio/file_client.py:567). It therefore fails with PermissionError only when the user cannot create /mnt/cfs. That is the case here (/mnt is root:root 755 and the uid is 1014). Run as root, which is typical in Docker, it silently creates /mnt/cfs/... and carries on.",
+   "correction": "It crashes for non-root users. As root it silently writes outside the work dir."
+  },
+  {
+   "claim": "NuScenesDataset.evaluate takes save_path as a required positional argument, so EvalHook raises TypeError when evaluation triggers.",
+   "verdict": "confirmed",
+   "evidence": "nuscenes_dataset.py:559-561. mmcv runner/hooks/evaluation.py:363-364 calls evaluate(results, logger=..., **eval_kwargs) without save_path. The base evaluation interval is 24 (configs/_base_/datasets/nus-3d.py:142), and validation is on by default (tools/train.py:263)."
+  },
+  {
+   "claim": "The cross-dataset NDS the code prints is not the paper's NDS*: missing classes get zero error and mAVE/mAAE count as 0. The paper's NDS* formula reproduces Table 1's oracle rows.",
+   "verdict": "confirmed",
+   "evidence": "lyft_dataset_DA.py:429-456 adds AP/TP only for Test_CLASSES and only for trans/scale/orient. DetectionMetrics stores errors in defaultdict(float) (nuscenes data_classes.py:202) and takes a nanmean over all cfg.class_names (:231-239), so classes and metrics never added count as 0. Eq.18 check: (3\u00b70.598+0.526+0.848+0.908)/6 = 0.679 and (3\u00b70.516+0.449+0.837+0.831)/6 = 0.611, both matching Table 1."
+  },
+  {
+   "claim": "Paper vs code: the IFV has no sigmoid; yaw is 0.2 in the paper text but 0.4 in the config, and 0.4 matches Fig. 9 (0.458); Eq.7 uses soft targets where the code uses hard masks; BEVFormer Table 3 0.084\u21920.208; total batch 32 on 8 GPUs.",
+   "verdict": "confirmed",
+   "evidence": "Paper (arXiv 2310.11346v3): Eq.3 includes a sigmoid. App. C.1 gives '0.04,0.2,0.04 and 4'. Fig. 9b bars read 0.443/0.452/0.455/0.458 at yaw 0/0.1/0.2/0.4, and Table 1 PD-BEV Nus\u2192Lyft is 0.458. Eq.7, Table 3 and App. B.3 (batch 32 on 8\u00d73090) also match. Code: img_aux.py:869-871 (no sigmoid), pcbev.py:221-241 (hard masks)."
+  },
+  {
+   "claim": "License: the repo has no LICENSE now or in history; the BEVDet and mmdet3d parts are Apache-2.0.",
+   "verdict": "confirmed",
+   "evidence": "git log --all -- LICENSE setup.py returns nothing. Upstream 2ae6a02:LICENSE is Apache-2.0 ('Copyright 2018-2019 Open-MMLab')."
+  },
+  {
+   "claim": "Environment: tcar_bevdet satisfies PD-BEV's version asserts and is the candidate env. The committed .so was built with GCC 5.4 for sm_86 against libcudart.so.11.0.",
+   "verdict": "partly_wrong",
+   "evidence": "The versions and asserts check out (mmdet3d/__init__.py:21-47). For the .so: strings shows GCC 5.4.0, cuobjdump shows an sm_86 cubin, and NEEDED includes libcudart.so.11.0 and libtorch_cuda_cu.so. However, mmdet3d/models/backbones/__init__.py:12-13 imports context_cluster{,2}, which import timm (timm.models.layers.helpers) and einops (context_cluster.py:14-18). Neither is in requirements/, and neither is installed in tcar_bevdet or gen2e-bevdepth, so import mmdet3d.models fails.",
+   "correction": "Add timm (pre-0.9 API) and einops to the env plan, or remove the context_cluster imports."
+  },
+  {
+   "claim": "BEVFormer facts: bev_embed is (22500,B,256) with rows = y and cols = x; lidar2img is scaled by RandomScaleImageMultiViewImage; lidar2cam is a meta key but cam_intrinsic is not; image features are a single stride-32 level. Plus: 'Base caveat for R1-c10: BEVFormer hard-codes 6 cameras'.",
+   "verdict": "partly_wrong",
+   "evidence": "The code facts all check out: bevformer_head.py:206, encoder.py:60-71, transform_3d.py:246-253 and 302-320, bevformer_small.py:42-44/54/68/182/209/241-260, transformer.py:40,74-75,170-171, spatial_cross_attention.py:47,66,145-164. 'cam2img' is a meta key but is never populated. The rig premise is wrong, though: the Gen2E rigs are the PCCR rigs. R1 has 8 cameras; R1-c6 has 6, R1-c10 10, R2 6, R3 10, R4 8, R5 4, R6 9, R7 7, R8 6, R9 7.",
+   "correction": "num_cams and cams_embeds must change just to train on R1 (8 cameras), and 8 of the 13 evaluation rigs have N\u22608. This is not an R1-c10-only problem."
+  },
+  {
+   "claim": "Memory: the IFV gather tensor is about 0.8 GB fp32 per call (B=4, N=6, D=99, 24x44); a BEVFormer render is about 0.4 GB.",
+   "verdict": "confirmed",
+   "evidence": "4\u00b780\u00b76\u00b799\u00b724\u00b744\u00b74 B = 803 MB. The transpose().reshape (view_transformer_pc.py:389) makes another full copy and nerf (:359) a 51/99 copy, so the transient peak is about 2 GB per call (inferred). BEVFormer: 46\u00b780\u00b752\u00b76\u00b780\u00b74 B \u2248 367 MB."
+  },
+  {
+   "claim": "The UDA data_config uses 'Lyft-style camera names', which the pipeline ignores.",
+   "verdict": "partly_wrong",
+   "evidence": "pdbev-uda-NUS2LYFT.py:29-30 (and the LYFT2X, pc-lyft and DA configs) list 'Camera_FrontLeft', ..., which are DeepAccident/CARLA-style names. Lyft uses CAM_* names. They are indeed ignored.",
+   "correction": "They are DeepAccident-style names, copy-pasted into every config and ignored."
+  },
+  {
+   "claim": "Port effort: M for another BEVDet-family BEVDepth, L for BEVFormer-small.",
+   "verdict": "unverifiable",
+   "evidence": "Effort cannot be checked by reading. Context: /home/jeongtae/Gen2E/tools/setup_env_bevdepth.sh:2-3 says vanilla BEVDepth, +PD-BEV and +UDGA will all be built on the PD-BEV repo itself (dev2.0 API), which turns (a) mostly into making PD-BEV rig-agnostic. PCCR's reference BEVDet config uses the dev3.0-only BEVAug (third_party/pccr/models/BEVDet/bevdet-r50-pccr.py:56; BEVAug does not exist at 2ae6a02 or in dev2.1), so the API choice is still open. For (b), PCCR's 4-10 cameras per rig add base-level work."
+  },
+  {
+   "claim": "The .mim/configs/111111_PCBEV/pcbev-*.py files are byte-identical to configs/PDBEV/pdbev-*.py, except for one resize value in uda-LYFT2NUS.",
+   "verdict": "confirmed",
+   "evidence": "cmp/diff: 6 files identical. LYFT2NUS differs only at line 35 ((-0.06, 0.3) vs (-0.06, 0.11)); the public file was changed in commit bce41ed."
+  },
+  {
+   "claim": "The Lyft converter crashes with a NameError and writes the wrong file; the matching script exists only in .mim.",
+   "verdict": "confirmed",
+   "evidence": "tools/Lyft_converter.py:97 returns gt_boxes, z with z undefined. It writes lyft_infos_ann_*.pkl (:125-126, :154) with nuScenes-10 classes (:45-48). .mim/tools/add_anno_bevdet_lyft1.py:27-30,108,137 writes lyft_infos_ori_ann_*.pkl with Lyft-9 classes."
+  },
+  {
+   "claim": "Committed junk: about 400 .pyc files, a 1-byte Fig file, build/, and .mim copies.",
+   "verdict": "confirmed",
+   "evidence": "git ls-files: 400 .pyc, 3 build files, 172 .mim files; Fig is 1 byte."
+  }
+ ],
+ "missed": [
+  "The Gen2E rigs are the PCCR benchmark rigs, vendored at /home/jeongtae/Gen2E/third_party/pccr/pccr/configs/rigs/*.json. R1 has 8 cameras at FOV 65\u00b0, with 1280x720 images (pccr/core/scene_runner.py:61-62). R1-c6 and R1-c10 have 6 and 10 cameras. R1-f changes the FOV to 90\u00b0. R1-r turns the 4 corner cameras by 104-107.5\u00b0 of yaw. R1-t moves cameras by up to 0.6 m. R2-R9 have 4-10 cameras, FOV 65-120\u00b0, pitch up to 20\u00b0, and mounts 0.5-3.34 m high. The camera ids (CAM_BUMPER_FRONT, CAM_FENDER_*, ...) never match PD-BEV's hard-coded list, so PrepareImageInputs_UDA (loading_UDA.py:492-509) crashes on all 14 rigs, including training on R1.",
+  "bev_loss only works if CenterHead task 0 has exactly one class. squeeze(1) (centerpoint_head.py:656) removes the class dimension only when that task has one class. PCCR's reference BEVDet head is a single 9-class task (third_party/pccr/models/BEVDet/bevdet-r50-pccr.py:531-537). Then pred (B,256,256) and gts (B,9,256,256) fail to broadcast unless B is 1 or 9, and at B=1 the car prediction is silently compared against all classes.",
+  "Load3DBoxesHeatmap writes targets with negative-index wrap-around. Validity is checked before augmentation (loading_UDA.py:898, 1033), but masks and regression/depth targets are written with slices y_int-1:y_int+2 and x_int-1:x_int+2 (:938-952, :1072-1086). When crop or flip pushes a valid centre to cell \u2264 -3, Python negative indexing writes it at the opposite edge: x_int=-3 writes columns 84-86 of 88. nuScenes resize 0.55 alone allows crop_w up to 176 px. Centres in cells 0, -1 and -2 get no mask at all. The wrong channel-2 values also feed L_pg (view_transformer_pc.py:434).",
+  "Labels of -1 (ignored classes) pass the check gt_labels[i] < self.classes_num (loading_UDA.py:929, 1063) and are drawn into the last class channel by negative indexing. PCCR's adapter emits -1 for names outside the class list (third_party/pccr/models/BEVDet/pccr_dataset.py:131-139). The check needs to be 0 <= label < C.",
+  "2D targets are built from raw results['ann_infos'] (loading_UDA.py:860, 998), not from the range- and name-filtered gt_bboxes_3d (NUS2X config :206-208). Objects outside the \u00b151.2 m IFV grid, or beyond depth bins 1..51, still get L_ps/L_render targets that rendering cannot reproduce.",
+  "The IFV z-bin is int(z_interval/height_num) (view_transformer_pc.py:253). height_num=3 gives 2 m bins that cover only 6 of the 8 m. height_num=16 gives 0, so get_bev_coor divides by zero (:364) and every lookup is masked (:386), leaving the rendered features all zero. Yet the paper's Fig. 9d reports height 16 as the best setting (0.462).",
+  "timm and einops are import-time dependencies: mmdet3d/models/backbones/__init__.py:12-13 imports context_cluster.py, which imports them at :14-18 (timm.models.layers.helpers needs the timm \u22640.6 API). Neither is in requirements/, and neither is installed in tcar_bevdet or gen2e-bevdepth.",
+  "BEV_Aux runs three times per iteration on the same BEV map (pcbev.py:90-92 calls into view_transformer_pc.py:312, 345 and 353). That triples its activations and updates BatchNorm running stats three times per step. A port should compute the IFV once.",
+  "The Gaussian focal loss in Img_Aux and Img_Aux_Dy divides the negative term by the count of all non-peak pixels (img_aux.py:73-83). CenterNet and mmdet divide by num_pos. This changes the scale of the 2D and render heatmap losses and matters for a faithful reproduction.",
+  "The Euler perturbation names do not match camera axes. loading_UDA.py:351-381 decomposes sensor2ego in ZYX order, so for a forward camera 'pitch_aug' rotates the image in-plane (roll) and 'roll_aug' tilts the camera. This is harmless while both ranges are 0.04, but it matters if the ranges are tuned toward PCCR variants (R1-r is pure yaw; R5 and R8 have pitch up to 20\u00b0).",
+  "PD-BEV's perturbation ranges do not match the PCCR variants. Yaw \u00b10.4 rad (\u00b123\u00b0) is far smaller than R1-r's 104-107.5\u00b0, while \u00b12 m xyz is larger than R1-t's \u22640.6 m. R1's bumper and fender cameras sit at 0.64-0.86 m, so \u00b12 m in z puts about 30% of virtual target cameras below the vehicle origin (inferred).",
+  "Virtual-depth coverage per PCCR FOV at 704-px input width. 65\u00b0 (f \u2248 553 px): BEVDepth_DG depth range 1.2-122 m, rendering range 2.5-64 m. 90\u00b0 (R1-f): 0.78-77 m. 120\u00b0 (R5-R9, f \u2248 203 px): 0.45-44.7 m. That is below PCCR's 50 m car range (bevdet-r50-pccr.py pccr_class_range), so adopting BEVDepth_DG's virtual depth hurts the 120\u00b0 views.",
+  "The report misses the current Gen2E workspace. Two newer envs exist: gen2e-bevdepth (torch 1.10.0+cu113, mmcv 1.5.3, mmdet 2.25.1, no mmdet3d yet) and gen2e-bevformer (mmdet3d 0.17.1 from /home/jeongtae/Gen2E/third_party/mmdetection3d-v0.17.1). /home/jeongtae/Gen2E/tools/setup_env_bevdepth.sh:2-3 says the BEVDepth family will be built on the PD-BEV repo (dev2.0 API). PCCR's BEVDet reference uses the dev3.0 API instead (BEVAug, bevdet-r50-pccr.py:56).",
+  "intrins_actual (loading_UDA.py:591-595) applies only resize and crop, not flip or rotation. cx' and cy' in the 31-d camera vector are therefore wrong for flipped samples; fx' and fy' are unaffected.",
+  "Lyft evaluation prints mAP averaged over 4 Test_CLASSES [car, truck, bicycle, pedestrian] (lyft_dataset_DA.py:112-113, 429-447), but the -pc-lyft head predicts only car (bevdepth-r50-cbgs-pc-lyft.py:92). The printed mAP is therefore car AP divided by 4; read the per-class car row instead.",
+  "The 2D targets project key-ego boxes through each camera's own sensor2ego with no ego-motion compensation (loading_UDA.py:840-842, 889), while rendering uses sensor2keyego (:528-548). This gives a small misalignment on nuScenes and none on synchronized PCCR."
+ ],
+ "overall": "The report is largely accurate. I checked about 32 claims against the code, my own blob-hash comparison against upstream, the installed packages and the paper. I executed none of the PD-BEV code.\n\nConfirmed as stated:\n- The base commit 2ae6a02 (223/16/19/0) and the file-level delta.\n- The test-time model (BEVDepth_DG with 31-d virtual-depth lifting) and the broken PCBEV simple_test.\n- The transposed IFV sampling, the eq(0) mask in bev_loss, and the max-pool bug that disables LiDAR depth in the baseline.\n- Box-centre virtual depth for L_pg, the hard-coded camera names and intrinsics, and the hard-coded 0.8 m / 2 m / bins 1..51 rendering constants.\n- The target-generator policies, the main config facts, the UDA dataset mechanics, the README and converter defects, the EvalHook break, and the NDS vs NDS* gap (the formula reproduces Table 1).\n- The paper-vs-code mismatches, the license status, and the BEVFormer code facts.\n\nCorrections:\n- The UDA sign bug affects only 3 of 4 configs: pdbev-uda-LYFT2NUS.py:65-66 overrides loss_flag to 'sim'.\n- In the base-commit tiebreak, e57a515 is an ancestor, and the file that rules out the newer dev2.1 commits is box3d_nms.py, not bev_pool.py.\n- The virtual-camera translation mismatch is real, but its size is t + \u03b4 + R'\u1d40\u03b4, a random offset of several metres, not a fixed ~1.5 m.\n- The /mnt/cfs dump crashes only non-root users.\n- The camera names in the configs are DeepAccident-style, not Lyft-style.\n- The env plan misses that timm and einops must be installed, because mmdet3d/models/backbones/__init__.py:12-13 imports them.\n\nBiggest gap: the rig analysis assumes nuScenes-like rigs. The actual Gen2E rigs are the PCCR rigs vendored in the workspace. R1 itself has 8 cameras, and no rig uses nuScenes camera ids. As a result:\n- PD-BEV's pipeline crashes on every rig, including training on R1.\n- BEVFormer's num_cams=6 and cams_embeds are a training-time problem on R1, not only an R1-c10 problem.\n\nMissed latent bugs:\n- bev_loss requires CenterHead task 0 to be single-class, and PCCR's reference head is one 9-class task.\n- Negative-index wrap-around and -1 label handling corrupt the 2D targets.\n- The int() truncation of the IFV z-bin breaks height_num=16, the value the paper's Fig. 9 reports as best.\n\nThe effort estimates (M and L) are plausible but unverifiable. Verification scripts and outputs are in /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev-verify/."
+}

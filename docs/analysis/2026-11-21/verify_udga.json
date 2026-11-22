@@ -1,0 +1,130 @@
+{
+ "checks": [
+  {
+   "claim": "The base is HuangJunJie2017/BEVDet master. The last code commit is b17b6e85 (2022-08-15), and for all 55 paths it is code-identical to 2919b99 and to the tip 4d85acf. It is mmdet3d 0.17.2 with mmcv capped at <=1.4.0. It is not Megvii BEVDepth.",
+   "verdict": "confirmed",
+   "evidence": "- `git diff --stat b17b6e8 4d85acf` touches only README.md, and b17b6e8 is contained only in origin/master.\n- Blob hashes of view_transformer.py, bevdet.py, loading.py, centerpoint_head.py and lyft_dataset.py are identical at b17b6e8, at 4d85acf and in the analyzer's work/base copies.\n- mmdet3d/version.py says 0.17.2; mmdet3d/__init__.py requires mmcv 1.3.8-1.4.0 and mmdet 2.14-3.0.\n- 99ad831 'Bump to v0.17.2' is dated 2021-11-01; BEVDet commits start 2022-06-01.\n- compare_result.json has a three-way tie (5956/12550) for 2919b99, 4d85acf and b17b6e8.\n- No overlay file imports pytorch_lightning."
+  },
+  {
+   "claim": "14 files are unchanged, 22 modified and 19 new, with diff sizes such as view_transformer +663/-11, bevdet +1270/-16 and centerpoint_head +1648/-22.",
+   "verdict": "confirmed",
+   "evidence": "- compare_result.json gives these counts.\n- My own `diff` against the base copies gives view_transformer +662/-11, bevdet +1270/-15, loading +2282/-7, centerpoint_head +1647/-21, transforms_3d +9/-3 and formating +4/-1. The few-line differences come from whitespace handling in difflib vs diff.\n- Calling all 22 'supersets' is loose: lyft_dataset.py removes 48 lines and LICENSE is replaced outright."
+  },
+  {
+   "claim": "At least 12 referenced modules or symbols are missing: the modified nuscenes_dataset, nuscenes_dataset_origin, sait_carla, nuscenes_yawaug, LyftEval, CarlaEval, loading_carla, SDF, TransformerBlock, clip_sigmoid_keep_value, RAYInstance3DBoxes and a modified single_gpu_test. The new detectors are not registered.",
+   "verdict": "confirmed",
+   "evidence": "I resolved every overlay import with AST against `git ls-tree 4d85acf` and the master sources.\n- Missing modules: datasets/__init__.py:10, :29, :31; utils.py:20-21; lyft_dataset.py:464; pipelines/__init__.py:21; view_transformer_20240308.py:10 (bev_pool_v2).\n- Missing symbols: view_transformer.py:11 (SDF), resnet.py:11 (TransformerBlock), models/utils/__init__.py:2 (clip_sigmoid_keep_value), transforms_3d.py:9 (RAYInstance3DBoxes), loaders.py:336 (map_vehicle_to_car(_shift)).\n- The stock master NuScenesDataset.__init__ has no domain_shift kwarg.\n- There is no models/detectors/__init__.py in the overlay.\n- The analysis missed one item: loaders.py:177 also imports a map from waymo_dataset (Waymo evaluation only)."
+  },
+  {
+   "claim": "The nuscenes-devkit 'detection_lyft' config, LyftEval.py and the Lyft JSON tables are needed only when Lyft is the target (\u00a71.3 and data_requirements).",
+   "verdict": "wrong",
+   "evidence": "- LyftDataset.__init__ (lyft_dataset.py:121, 154-168) runs for the training LyftYawAug too. It always calls config_factory('detection_lyft') and then pops Lyft-only names such as 'emergency_vehicle', 'other_vehicle' and 'animal' from class_range.\n- The stock devkit (1.0.9 and 1.1.10 in the local envs) ships only detection_cvpr_2019.json, and config_factory asserts that the requested file exists.\n- DetectionConfig asserts set(class_range) == the nuScenes DETECTION_NAMES (site-packages nuscenes/eval/detection/data_classes.py:27; the overlay copy has the same check at datasets/data_classes.py:26). A Lyft-class config therefore needs a patched devkit, not just a JSON file.\n- LyftEval and CarlaEval are imported at module level by datasets/utils.py:20-21, which both datasets/__init__.py:27 and lyft_yawaug.py:11 import.",
+   "correction": "These items block stage-1 training (Lyft\u2192nuScenes), not just Lyft-as-target evaluation. Target A's stub list must also patch LyftDataset.__init__ (the eval_version and class_range.pop logic) or patch nuscenes-devkit (extend DETECTION_NAMES and add detection_lyft.json)."
+  },
+  {
+   "claim": "Config facts: BEVSSL3_unsup; pixel_const 400; SmoothL1 overlap loss with weight 1.0; depth weight 100; dbound [1,90,1] so D=89; input 384x704; BEV \u00b151.2 m at 0.8 m (128x128); one car task without velocity; batch 8/GPU; AdamW 2e-4 with weight decay 0.01; LR steps [16,24]; 32 epochs; save_best 'mAP'; LyftYawAug with naug=1; nuScenes val with domain_shift; load_from None.",
+   "verdict": "confirmed",
+   "evidence": "- Config lines 8-43, 49-146 and 236-300; default_runtime.py:16.\n- src_size is referenced only at config:23.\n- Test resize is 704/1600 + 0.04 = 0.48 (loading.py:1213-1214).\n- crop_h (0,0) gives a bottom-aligned crop (loading.py:1207, 1219)."
+  },
+  {
+   "claim": "Camera pairs are a hard-coded 6-camera ring (12 directed pairs in config order). Any other count falls back to a Waymo 5-camera table plus an N=N-1 hack, and B = BN // len(cam_pair_idx).",
+   "verdict": "confirmed",
+   "evidence": "- bevssl.py:33-45 lists [[3,1],[0,2],[1,5],[0,4],[3,5],[4,2]], which is FL\u2192{BL,F}, F\u2192{FL,FR}, FR\u2192{F,BR}, BL\u2192{FL,B}, B\u2192{BL,BR}, BR\u2192{B,FR}.\n- bevssl.py:55-56 and 76-77; bevssl_unsupdepth.py:115-116.\n- The loss derives B a second way, from Ncams (bevssl_unsupdepth.py:112)."
+  },
+  {
+   "claim": "There is a verified pixel-index transposition bug in reprojection: each projected point carries another pixel's logit.",
+   "verdict": "confirmed",
+   "evidence": "- bevssl.py:62-68 builds the point grid with meshgrid(w,h,d) ('ij') then permute(2,0,1,3), so it flattens as (D,W,H).\n- bevssl.py:74 flattens depth_pred (BN,D,H,W) as (D,H,W).\n- My own pure-Python index replication: 18/24 entries mismatched for D=3,H=2,W=4, and 93,806/93,984 (99.8%) for 89x24x44. The depth bin always matches.\n- photo_reprojection has the same pattern (bevssl.py:176-181).\n- A torch-level run of the verbatim code was not performed (that action was denied)."
+  },
+  {
+   "claim": "The photometric term L_p has no gradient path, so loss_rgb is only logged.",
+   "verdict": "confirmed",
+   "evidence": "- bevssl.py:174 takes argmax, which gives a LongTensor.\n- bevssl.py:213-218 gathers raw input-image pixels by integer index.\n- get_rgb_loss (bevssl.py:225-233) only sees those values, so nothing connects to the parameters.\n- The branch is active because dbg_rgb=False (bevssl_unsupdepth.py:88-92).\n- Wording nit: line 227 clamps |\u0394|, not the images."
+  },
+  {
+   "claim": "pixel_const: lifting divides frustum depth by k = c\u00b7sqrt(fx'^-2 + fy'^-2), which equals DG-BEV Eq. 3 with c = 1/400 (f_ref \u2248 566 px), but the target is d/k (the inverse). PD-BEV multiplies the target by k and divides in lifting.",
+   "verdict": "confirmed",
+   "evidence": "- view_transformer.py:484-489 (lifting); bevssl_unsupdepth.py:72-77 (target).\n- DG-BEV PDF p.4: Eq. 3 d = (s/c)\u00b7d_m and Eq. 4 s = sqrt(1/fx\u00b2 + 1/fy\u00b2). I read the page image myself.\n- PD-BEV: loading.py:709 and 717-718 compute d\u00b7s/s_ref with f_ref = 450; view_transformer_pc.py:257 and 270-273 multiply by 1/k.\n- k \u2248 0.93 for the nuScenes front camera is inferred from the nominal fx and is not verified."
+  },
+  {
+   "claim": "extaug (LyftYawAug) rotates boxes and extrinsics but not the LiDAR points, so depth GT is wrong for the augmented half; yaw += angle is correct for the 0.17 convention.",
+   "verdict": "confirmed",
+   "evidence": "- lyft_yawaug.py:34-39 doubles the data set; :55 draws yaw from {-90, 90, 180}.\n- lyft_yawaug.py:62-83 applies l2n to box centres and sensor2lidar and stores 'lidar2new'.\n- get_matrix is a counter-clockwise Rz (utils.py:159-164), so l2n = Rz(-yaw), and yaw17 += yaw is right for the clockwise 0.17 convention.\n- 'lidar2new' is read only in gt_vis (utils.py:214-218). LoadPointsFromFile (loading.py:2461-2510) ignores it, and PointToMultiViewDepth projects with the rotated rots/trans (loading.py:60-66)."
+  },
+  {
+   "claim": "Adapter/PEFT parameters sit in plain lists/dicts or .cuda() tensors and are never trained or saved. 'requries_grad' typos defeat freezing. peft_bn2d raises NameError. Adapters are not identity-initialized.",
+   "verdict": "confirmed",
+   "evidence": "- resnet.py:39-49 (list + .cuda()), :27-33 (typos), :139-140 and :172-195.\n- centerpoint_head.py:125-126, :179-180, :304 and :336-344 (dict + .cuda()), :1250.\n- view_transformer.py:868, 877, 884, 900, 907 (typos).\n- peft_conv.py:39 uses an undefined num_features.\n- The init_* helpers are never called (grep).\n- These are registered correctly: the SSLAdapter view transformer (view_transformer.py:554-631), AdapterCenterHead.adapter_conv (centerpoint_head.py:1913) and AdaptResNetForBEVDet."
+  },
+  {
+   "claim": "If a pair has no overlap, the SmoothL1 path takes the mean of an empty tensor and returns NaN; every listed pair must overlap in every sample.",
+   "verdict": "partly_wrong",
+   "evidence": "- bevssl_unsupdepth.py:127-135 builds a single mask over the whole (B, 2N, D, H, W) tensor and calls SmoothL1 once.\n- A non-overlapping pair just contributes no elements, and reprojection handles an empty kept1 without error (bevssl.py:114-127).",
+   "correction": "NaN occurs only when no pair in the entire batch gets any hit. A guard is still advisable, but per-pair non-overlap does not kill training."
+  },
+  {
+   "claim": "tools/test.py needs a modified single_gpu_test (it unpacks two return values); dist_test.sh hard-codes --eval waymo; train.py adds --load-from and cfg.device.",
+   "verdict": "confirmed",
+   "evidence": "- Against the base: tools/test.py:193 (the report says :194) unpacks `outputs, img_metas = single_gpu_test(...)`, while stock master returns only results.\n- dist_test.sh adds `--eval waymo` and PORT=$4.\n- train.py:31-32, 111 and 121-122."
+  },
+  {
+   "claim": "Paper facts:\n- BEVFormer gets adapters only, with no depth constraint (App. C, Table 11: nuScenes\u2192Lyft, 50%/100%, 12.2M).\n- 24 epochs, \u00b150 m, 384x704 for Lyft.\n- Temporal adjacent views are mentioned.\n- The adapter uses BN with conv-down/linear-up, 8.8M parameters, near-identity init.\n- NDS* = (3\u00b7mAP + \u03a3TP)/6.",
+   "verdict": "confirmed",
+   "evidence": "From arXiv 2410.22461 HTML (summarized fetch, same as the report; PDF tables not read):\n- 'reconstruct our UDGA paradigm without explicit depth constraints'.\n- 'train 24 epochs with AdamW optimizer by learning rate 2e-4'.\n- '[-50.0m, 50.0m]'; '[384,704] for Lyft'.\n- 'spatial and temporal adjacent views'.\n- Eq. 5 A(x) = \u03c6_up(\u03c3(\u03c6_down(BN(x)))); near-identity init.\n- Table 10 lists 'Ours' as conv-down/linear-up, 8.8M; Table 11 values match."
+  },
+  {
+   "claim": "NDS* normalization depends on mean_ap_weight: weight 3 gives the paper's (3\u00b7mAP + \u03a3TP)/6, the stock cvpr_2019 weight 5 gives (5\u00b7mAP + \u03a3TP)/10. save_best 'mAP' actually tracks NDS*.",
+   "verdict": "confirmed",
+   "evidence": "- data_classes.py:265-268 computes total = (w\u00b7mAP + \u03a3 first 3 tp_scores) / (2w).\n- lyft_dataset.py:520-521 sets detail['mAP'] = nd_score."
+  },
+  {
+   "claim": "Only 3 conda envs exist (bevformer, open-mmlab, tcar_bevdet), with the listed versions; the authors' environment is as given in requirements_udga.txt.",
+   "verdict": "partly_wrong",
+   "evidence": "Version probes reproduce the stated versions:\n- bevformer and open-mmlab: py3.8.20, torch 1.9.1+cu111, mmcv 1.4.0, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1.\n- tcar_bevdet: torch 1.10.0+cu113, mmcv 1.5.3, mmdet 2.25.1, mmseg 0.25.0, no mmdet3d.\n- requirements_udga.txt matches: torch 1.9.0+cu111, mmcv-full 1.4.0, mmdet 2.25.1, mmdet3d 0.17.2 from /home/ji1.lee/bevdepth, numba 0.48.0, numpy 1.19.5, nuscenes-devkit 1.1.9, open3d 0.18.0, spacy 2.3.9, pytorch-lightning 1.6.2.\n- GPUs are 4x RTX 4090 (cc 8.9), driver 535.183.01.\n- However, /home/jeongtae/miniconda3/envs now also contains gen2e-bevdepth (created 2026-11-21 23:31) and gen2e-bevformer (23:20), both made after the analysis.",
+   "correction": "There are 5 envs now:\n- gen2e-bevdepth: torch 1.10.0+cu113, mmcv 1.5.3, mmdet 2.25.1, mmseg 0.25.0, numpy 1.20.3, no mmdet3d yet.\n- gen2e-bevformer: torch 1.9.1+cu111, mmcv 1.4.0, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1.\nThe cvt, repvf, b2d, foundation and smart envs are still absent."
+  },
+  {
+   "claim": "BEVDet dev2.x facts:\n- dev2.1 is mmdet3d 1.0.0rc4 and ships only BEVDepth4D configs.\n- Depth output is softmax; GT is min-pooled over 16x16; depth loss weight is about 3.\n- Detectors register in mmdet DETECTORS.\n- BDA does not touch the points, so extaug implemented as a BDA yaw avoids the depth-GT bug.",
+   "verdict": "confirmed",
+   "evidence": "- dev2.1 f71858d: version.py = 1.0.0rc4; configs/bevdet contains only *-4d-depth* BEVDepth variants.\n- dev21/view_transformer.py:697 (loss_depth_weight=3.0), :733-762 (min-pool), :789 (softmax).\n- dev21/bevdet.py:7, 13 (mmdet DETECTORS).\n- dev21/loading.py:1078-1098 applies BDA only to boxes plus bda_rot.\n- dev21/loading.py:749-795 builds depth GT from unaugmented calibration."
+  },
+  {
+   "claim": "mmdet3d 1.0.0rc4 needs mmcv-full 1.5.3-1.7.0, has its own MODELS registry with an mmdet fallback, and has no ops/iou3d (so the 0.17 head must not be copied).",
+   "verdict": "partly_wrong",
+   "evidence": "- PD-BEV (rc4) mmdet3d/__init__.py:21-22 requires mmcv 1.5.2-1.7.0.\n- models/builder.py:16 defines MODELS = Registry(parent=MMCV_MODELS); :95 falls back to MMDET_DETECTORS.\n- mmdet3d/ops has bev_pool_v2 but no iou3d; the rc4 centerpoint_head uses nms_bev.\n- The overlay head imports mmdet3d.ops.iou3d (centerpoint_head.py:13).",
+   "correction": "The lower bound is mmcv-full 1.5.2. The 1.5.3 in the envs is fine."
+  },
+  {
+   "claim": "view_transformer_20240308.py cannot be imported on master because bev_pool_v2 is missing.",
+   "verdict": "confirmed",
+   "evidence": "It imports mmdet3d.ops.bev_pool_v2.bev_pool at line 10; mmdet3d/ops/bev_pool_v2 is absent from the 4d85acf tree, which has only bev_pool."
+  },
+  {
+   "claim": "Other rig assumptions:\n- LiDAR is loaded at test time.\n- With Ncams < len(cams), training picks a random camera subset in random order.\n- The frustum is built once from input_size.\n- The reprojection grid uses u = 16\u00b7i, not the frustum's linspace.\n- The SE module takes 33 raw camera parameters.\n- The crop is bottom-aligned.",
+   "verdict": "confirmed",
+   "evidence": "- config:188-210 (test pipeline loads points and PointToMultiViewDepth).\n- loading.py:1192-1198 (np.random.choice).\n- view_transformer.py:100-112 (static frustum; linspace(0, W-1, fW) at :106) vs bevssl.py:66-67 (u = 16\u00b7i).\n- view_transformer.py:282-295 and 524-530 (9+9+3+9+3 = 33).\n- loading.py:1207 and 1219 (bottom-aligned crop)."
+  },
+  {
+   "claim": "Port-effort estimates: Target A (reference run) = M, Target B (BEVDepth rc4) = L, Target C (BEVFormer adapters) = S.",
+   "verdict": "unverifiable",
+   "evidence": "These are judgment calls. Target A looks optimistic: on top of the listed stubs it needs a re-implemented nuScenes NDS* evaluation and the devkit/LyftDataset.__init__ fix the report missed. B = L is consistent with the scope found."
+  },
+  {
+   "claim": "The license is a Samsung proprietary notice: copying, distribution or disclosure needs written permission, and use is limited to non-commercial research. Public GitHub release of UDGA-derived code is not allowed without permission.",
+   "verdict": "confirmed",
+   "evidence": "- The LICENSE text matches word for word.\n- The commits are by ji1.lee@samsung.com (60a8935, 2025-05-13).\n- BEVDet's base LICENSE is Apache-2.0.\n- The legal implications are the analyzer's reasonable reading, not something verifiable here."
+  }
+ ],
+ "missed": [
+  "Training-time blocker not in Target A's stub list: datasets/lyft_dataset.py:121,154-168 runs config_factory('detection_lyft') and class_range.pop() on Lyft class names whenever the training LyftYawAug is constructed. The stock devkit has no such config (site-packages nuscenes/eval/detection/config.py:20-22) and DetectionConfig asserts class_range == the nuScenes DETECTION_NAMES (nuscenes/eval/detection/data_classes.py:27; overlay datasets/data_classes.py:26). The authors must have used a patched nuscenes-devkit.",
+  "Overlap-loss semantics the report does not call out (bevssl_unsupdepth.py:127-135, bevssl.py:125-126):\n- The scattered volume is sparse along D: only bins that receive a projected point are non-zero.\n- The mask is per pixel but is expanded over all 89 bins.\n- So the SmoothL1 with an undetached target mostly regresses camera j's logits toward 0 at bins with no hit (logit shrinkage that conflicts with the BCE depth loss), rather than enforcing cross-view agreement.\n- The 'dedupe' rank uses continuous depth (bevssl.py:116), so duplicates in the same (bin, v, u) cell survive and are resolved by a nondeterministic index_put.\nBoth matter for the faithful-vs-corrected decision.",
+  "Hard-coded camera names and layout not listed under rig assumptions: gt_vis (datasets/utils.py:188 lists 6 nuScenes/Lyft camera names; :260-263 assumes a 3+3 layout) runs at training-dataset construction (lyft_yawaug.py:26), so another rig's camera names give a KeyError. It also visualizes data_infos[-0] = data_infos[0] (utils.py:179), which is an unaugmented sample.",
+  "Two inconsistent batch derivations: reprojection uses B = BN // len(cam_pair_idx) (bevssl.py:55), while the loss uses B = BN // Ncams (bevssl_unsupdepth.py:112). With Ncams = 10, the two shapes disagree at the loss_weight AND/reshape (bevssl_unsupdepth.py:127-128) and training crashes.",
+  "Porting pitfall on the PD-BEV tree, which /home/jeongtae/Gen2E/tools/setup_env_bevdepth.sh:2-3 names as the base for vanilla BEVDepth, PD-BEV and UDGA (./bevdepth, not yet present). PD-BEV's plain PointToMultiViewDepth (PD-BEV mmdet3d/datasets/pipelines/loading.py:703-736) silently converts GT to virtual depth (f_ref=450), while LSSViewTransformerBEVDepth (mmdet3d/models/necks/view_transformer.py:590) lifts metrically. PD-BEV's own configs use PointToMultiViewDepth_UDA (loading_UDA.py:679) with LSSViewTransformer_pc. A UDGA or vanilla-BEVDepth config must pick its depth-GT path explicitly or it reproduces the same target/lifting mismatch. The setup script also effectively answers open question #9 (base = PD-BEV tree).",
+  "Environment changed after the analysis: gen2e-bevdepth and gen2e-bevformer now exist (created 2026-11-21 23:31 and 23:20; /home/jeongtae/Gen2E/logs/setup_env_bevdepth.log). gen2e-bevdepth has nuscenes-devkit 1.1.10 and lyft_dataset_sdk 0.0.8 but no mmdet3d yet.",
+  "datasets/loaders.py:177 lazily imports map_vehicle_to_car(_shift) from waymo_dataset, which is absent in master. A modified waymo_dataset.py is also missing, needed only for Waymo evaluation.",
+  "bevssl_unsupdepth.py:88-92 runs the photometric per-pair Python loops every iteration even though the term has zero gradient. It is pure compute cost and can be dropped in a port with no behavioural change.",
+  "Minor citation and version slips:\n- tools/test.py:193, not :194.\n- memory_profiler is imported at bevdet_uda_ft.py:14, not :13.\n- bevssl.py:226-227 clamps |\u0394|, not the normalized images.\n- mmdet3d 1.0.0rc4 accepts mmcv-full from 1.5.2, not 1.5.3."
+ ],
+ "overall": "The report is mostly accurate and holds up when checked against the code. I confirmed the central findings independently:\n- The base is BEVDet master b17b6e85 (code-identical to 4d85acf).\n- The 14/22/19 file split holds.\n- The listed missing modules are missing.\n- The config facts are correct.\n- The hard-coded 6-camera ring is as described.\n- The (D,W,H) vs (D,H,W) transposition bug exists: 99.8% of points carry another pixel's logit, per my own index simulation; a torch-level run was not possible.\n- The photometric loss has no gradient.\n- The pixel_const target is d/k while lifting uses bin/k. I checked this against DG-BEV Eq. 3-4 (PDF p.4) and PD-BEV's code.\n- extaug never moves the LiDAR points into the rotated frame.\n- The adapter/PEFT parameters are unregistered and the requries_grad typos are real.\n- The paper facts check out: BEVFormer gets adapters only, 24 epochs, \u00b150 m, NDS* formula.\n\nThree things need correcting:\n1. The 'detection_lyft' devkit config and LyftEval are wrongly scoped as \"Lyft-as-target only\". They block stage-1 training and even package import. A Lyft-class eval config also needs a patched nuscenes-devkit (DETECTION_NAMES assert), not just a JSON. Target A's stub list omits this.\n2. The NaN-on-empty-mask risk is overstated. The mask is pooled over all pairs and the whole batch, so a single non-overlapping pair does not produce NaN.\n3. The environment section is stale. gen2e-bevdepth and gen2e-bevformer were created after the analysis. The mmcv lower bound for rc4 is 1.5.2, not 1.5.3.\n\nThe most important omissions:\n- The L1 overlap loss mostly pulls the target camera's logits toward 0 at bins with no hit.\n- gt_vis hard-codes the camera names and runs during training-dataset construction.\n- The two batch-size derivations disagree and crash on non-5/6-camera rigs.\n- The project's own setup script builds the UDGA port on the PD-BEV tree. That tree's plain PointToMultiViewDepth silently produces virtual-depth GT, so a careless port would reintroduce the same target/lifting inconsistency.\n\nThe effort estimates are judgment calls; Target A's M looks optimistic. The license reading (no public GitHub release without Samsung's permission) matches the LICENSE text, though its legal effect cannot be verified here."
+}

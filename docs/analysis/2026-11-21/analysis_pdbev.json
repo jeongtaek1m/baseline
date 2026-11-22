@@ -1,0 +1,615 @@
+{
+ "topic": "PD-BEV (Generalizable-BEV @ c2995d1, AAAI 2025 'Perspective Debiasing') \u2014 baseline analysis for porting onto BEVDepth (BEVDet family) and BEVFormer-small",
+ "summary_md": "# PD-BEV (EnVision-Research/Generalizable-BEV @ c2995d1): porting analysis\n\nRelative paths below are under `/home/jeongtae/Gen2E/PD-BEV`. I cloned the upstream repos read-only into `/tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev/` (`BEVDet/`, blobless, all branches; `BEVFormer/` @66b65f3). The upstream files I diffed against are extracted in `.../pdbev/up2ae6a02/`, and the base-matching script is `.../wf/pdbev_scripts/match_base.py`. I executed none of the PD-BEV code. Everything below comes from reading the code unless it is marked *(inferred)*. I also checked the code against the paper (arXiv 2310.11346v3).\n\n## 0. Summary\n- **Base:** BEVDet `dev2.0` HEAD `2ae6a02` (2023-03-13).\n- **Method name in code:** the method was called **PCBEV** inside the code. The classes are `PCBEV_DG` and `PCBEV_UDA`, the module file is `view_transformer_pc.py`, and the authors' working directory was `PCBEV_realsed`. `mmdet3d/.mim/configs/111111_PCBEV/pcbev-*.py` are byte-identical to `configs/PDBEV/pdbev-*.py`, except that `uda-LYFT2NUS` differs by one resize value. The `-pc-` in `configs/bevdet_our/bevdepth-r50-cbgs-pc-*.py` therefore means \"the BEVDepth config built on the PCBEV view transformer (`view_transformer_pc.py`)\". It does not mean point cloud. The code never spells out what \"PC\" stands for; perspective-consistency is only a guess.\n- **Test-time architecture:**\n  - Compared with the repo's own baseline `BEVDepth_DG`, PD-BEV adds **only training-time branches and losses**. PD-BEV checkpoints are evaluated with `bevdet_our/bevdepth-r50-cbgs-pc-*.py`, which builds `BEVDepth_DG` (README.md:50,59; `mmdet3d/.mim/tools/test.sh`). `PCBEV_*.simple_test` is broken (pcbev.py:62-69,110-124).\n  - `BEVDepth_DG` is **not vanilla BEVDepth**. It lifts with focal-normalised \"virtual\" depth bins (canonical f=450 px; view_transformer_pc.py:257,268-273,520-525). Its DepthNet uses a **31-d** camera vector that includes the post-augmentation intrinsics (view_transformer_pc.py:394-422,508-509), where upstream uses 27-d. This is the DG-BEV idea (Wang et al. CVPR'23), which the paper cites as \"following\".\n- **Training-only additions (paper terms in brackets):**\n  1. A 2D CenterNet head on image features [L_ps, \"2D detector\"].\n  2. A BEV decoder that turns the BEV map into an implicit foreground volume [IFV].\n  3. Ray rendering of perspective-view (PV) features from the IFV, for the real cameras and for randomly perturbed virtual cameras [MVSR].\n  4. Camera-aware 2D heads on the rendered maps, supervised by heatmaps from projected 3D GT [L_render, \"RenderNet\"].\n  5. A car-only BEV heatmap auxiliary loss.\n  6. Depth BCE on **object-centre depths from 3D boxes** [L_pg]. LiDAR depth is **not** used by PD-BEV's losses.\n  7. UDA only: consistency between the detached 2D-head heatmap and the rendered heatmap on target images [L_con].\n- **Bugs in the released code** (\u00a77): transposed BEV sampling in the renderer; a wrong positive mask in the BEV auxiliary loss; the UDA consistency loss has the wrong sign; virtual-camera rendering and its targets use different camera translations; the `-pc-` BEVDepth baseline's LiDAR depth loss is effectively disabled (`torch.max`).\n- **Reproducing as released is not possible.** There is no `setup.py` and no `LICENSE`, and the pkl link is empty. The Lyft converter crashes and writes the wrong file. The UDA CBGS index pkls are missing. Hard-coded `/mnt/cfs` dumps crash `tools/test.py`.\n\n## 1. Upstream base (verified)\nGit blob hashes of PD-BEV's 258 tracked `mmdet3d/` files (excluding `__pycache__` and `.mim`) compared against every upstream commit on every branch:\n\n| upstream ref | identical | modified | only in PD-BEV | upstream-only |\n|---|---|---|---|---|\n| **2ae6a02 (dev2.0 HEAD)** | **223** | 16 | 19 | **0** |\n| e57a515 / c0d20ff (dev2.0/2.1) | 222 | 17 | 19 | 0 |\n| dev2.1 HEAD f71858d | 218 | 20 | 20 | 6 |\n| dev3.0 HEAD 26144be | 211 | 27 | 20 | 15 |\n| master / checkpoint | 15 | ~170 | ~73 | ~90 |\n\n`2ae6a02` beats its child commits only on `ops/bev_pool_v2/bev_pool.py`. `requirements/` is identical to upstream.\n\n- **Modified (20):** `apis/train.py` (shuffle flag); `core/evaluation/lyft_eval.py`; `datasets/{__init__,custom_3d,dataset_wrappers,lyft_dataset,nuscenes_dataset}.py`; `datasets/pipelines/{__init__,loading}.py`; `models/backbones/__init__.py`; `models/dense_heads/centerpoint_head.py`; `models/detectors/{__init__,bevdet}.py`; `models/necks/{__init__,view_transformer}.py` (DepthNet `mlp_channels` argument); `version.py`; `tools/{train,test}.py`; `tools/dist_{train,test}.sh`.\n- **Added (34):**\n  - 10 configs.\n  - `models/detectors/{pcbev,bevdepth,bevdet_intri}.py`, `models/necks/{view_transformer_pc,img_aux}.py`, `models/backbones/context_cluster{,2,3}.py`.\n  - `datasets/{UDA_DA_LYFT_dataset,UDA_DA_Nus_dataset,lyft_dataset_DA,lyft_dataset_pkl,DeepAccident_dataset,CARLA_dataset,shift_dataset,nuscenes_dataset_DA}.py`, `pipelines/{loading_UDA,loading_plug}.py`.\n  - The committed `bev_pool_v2_ext*.so`.\n  - `tools/{Lyft_converter,Deepaccident_converter,launch_dist_job}.py`, `dist_train_mpi.sh`, `run_dist.sh`.\n- **Also committed:** `build/` objects, about 400 `.pyc` files, and `mmdet3d/.mim/{configs,tools}`. The `.mim` copies include unreleased scripts, notably `add_anno_bevdet_lyft1.py`, the one that actually produces `lyft_infos_ori_ann_*.pkl`.\n- **Removed vs upstream:** `setup.py`, `setup.cfg`, `LICENSE`, `MANIFEST.in`, docs, docker, all upstream configs except `_base_`, and `tools/create_data_bevdet.py`.\n- **Used by the released configs:** `pcbev.py`, `bevdepth.py`, `view_transformer_pc.py`, `img_aux.py`, the `centerpoint_head` additions, four classes in `loading_UDA.py`, `LoadAnnotationsBEVDepth`, and the nuScenes/Lyft/DeepAccident/UDA dataset classes.\n- **Unused leftovers:** context-cluster backbones, SHIFT/CARLA/`nus_DA`/`lyft_pkl`/`UDA_DA_Nus` datasets, `loading_plug.py`, `PrepareImageInputs_DG*`, `BEVDet_intri`, `CBGSDataset_UDA`.\n\n## 2. Method in code\n\n### 2.1 Data flow: `PCBEV_DG.forward_train` (pcbev.py:126-151) \u2192 `extract_img_feat` (69-107)\n1. **Image trunk.** ResNet-50 (with_cp) \u2192 CustomFPN gives a stride-16, 512-channel `img_feature` of shape (B, N, 512, 24, 44) for a 384\u00d7704 input.\n2. **Lift-splat.** `LSSViewTransformer_pc.forward` (view_transformer_pc.py:488-498) runs DepthNet(31-d) and a softmax over D=99 virtual-depth bins. `get_lidar_coor` rescales depth by k = f_eff/450 (259-282). Voxel pooling gives a BEV map (B, 80, 128, 128) and caches the frustum points `self.coor` (303). The rendering needs the non-accelerated path.\n3. **Detection.** The BEV encoder output (B, 256, 128, 128) goes to CenterHead, unchanged from BEVDet.\n4. **Training-only branches:**\n   - (a) `Img_Aux` on `img_feature`. Stride 16 \u2192 upsample \u00d72 \u2192 70 channels: 10 class heatmaps plus 6 attributes per class [du, dv, d_virtual, l, w, h] (img_aux.py:142-494; pcbev.py:88).\n   - (b) `BEV_Aux` on the BEV encoder output. A BasicBlock stack [80, 80, 84] is split into 4 height channels and 80 feature channels. The IFV is their outer product, (B, 80, 4, 128, 128) (img_aux.py:777-874, 869-871). There is **no sigmoid**, although paper Eq. 3 has one.\n   - (c) **Rendering.** Frustum points (D\u00d724\u00d744 per camera) are converted to IFV indices with a hard-coded 0.8 m cell and 2 m z-bins (`get_bev_coor`, view_transformer_pc.py:362-366). The IFV is gathered at those indices (`get_feature_Voxel2Frutums`, 368-391; it indexes [Z, X, Y], see bug 9). Virtual-depth bins 1..51 are summed (`nerf`, 358-360), giving PV features (B\u00b7N, 80, 24, 44).\n   - (d) The same rendering for **virtual cameras** with perturbed extrinsics (`get_lidar_coor_aug` / `get_PV_feats_aug`, 317-350; pcbev.py:76-79,92).\n   - (e) `Img_Aux_Dy` (RenderNet) on the rendered maps. It applies a camera-aware SE (BN1d(31) + MLP, img_aux.py:527-529,741-751) and outputs heatmaps and attributes, using real depth in the loss (pcbev.py:93-94).\n   - (f) `Img_Aux_Dy.get_heatmaps` on the height-summed IFV gives a BEV heatmap (B, 10, 256, 256). `CenterHead.bev_loss` compares channel 0 (car) with the task-0 GT heatmap that `loss()` caches, upsampled \u00d72 bicubic (centerpoint_head.py:651-664,697).\n   - (g) `loss_depth_source`: BCE on the virtual-depth distribution, with labels from channel 2 of `ann_maps_2d` (object-centre virtual depth at stride 8, min-pooled to stride 16; pcbev.py:142-143; view_transformer_pc.py:429-485).\n5. **2D targets.** `Load3DBoxesHeatmap` (loading_UDA.py:808-1130) computes them on the fly. It projects the 3D GT in the ego frame (`ann_infos`) into every real camera and every virtual camera, then applies the image-augmentation matrices. Outputs at stride 8 (48\u00d788):\n   - `heatmaps_2d` (N, h, w, C);\n   - `ann_maps_2d` (N, h, w, 7, C), channels [du, dv, d_virtual, l, w, h, d_real];\n   - `heatmap_masks_2d`, plus `_aug` versions for the virtual cameras.\n\n   No external 2D detector, depth maps or semantic masks are used.\n\n### 2.2 Losses (DG)\n| key | source | weight |\n|---|---|---|\n| loss_depth_source | box-centre virtual-depth BCE | 3.0 (view_transformer_pc.py:245) |\n| loss_heatmaps_source / loss_regess_source | Img_Aux vs 2D targets | 1 |\n| loss_pv_heatmaps_source / loss_pv_regess_source | RenderNet on real-camera renders | 1 |\n| loss_pv_*_aug_source | RenderNet on virtual-camera renders | 1 |\n| loss_bev_heatmap_source | BEV auxiliary loss, car only | 1 (unreduced; averaged in `_parse_losses`) |\n| CenterHead task losses | unchanged | L1 0.25 |\n\nThe regression losses return per-pixel maps that are averaged over all pixels (img_aux.py:316-352), so their effective weight is very small.\n\n### 2.3 UDA (`PCBEV_UDA`, pcbev.py:155-435)\n- **Initialisation.** Start from the DG checkpoint with `--checkpoint` (tools/train.py:38,226-228). The batch is split by `Target_Domain` (`Data_split`, 413-435).\n- **Losses.** Source samples get the DG losses (`bev_loss` is commented out at 201-202). Target samples get only `loss_2Dconsis_target`: class 0, pseudo-label taken from the *detached* `Img_Aux` heatmap, positives where the heatmap > thr = 0.9 (243-258, 316-327).\n  - **Sign bug:** with `loss_flag='Focal'` the code returns 1 \u2212 focal loss.\n  - The self-training terms `img_aux.pseudo` and `bev_img_aux.pseudo` are computed and then dropped.\n  - The BEV pseudo-label loss is commented out (383-386).\n- **Batches.** `UDA_DA_Lyft` interleaves CBGS-indexed source samples and shuffled target samples, with 5000 samples per epoch. Domains alternate per worker through process-local state, so each 4-sample batch holds 2 source and 2 target samples (UDA_DA_LYFT_dataset.py:122-133, 222-243, 746-760, 799-818).\n- **Schedule.** 3 epochs, lr 2e-4.\n- **Plausible reason UDA still helps despite the sign bug** *(inferred)*: target images in the batch adapt the BatchNorm statistics.\n\n### 2.4 Paper vs code\n- IFV sigmoid: in the paper, not in the code.\n- Pseudo-label: Eq. 7 keeps soft targets below \u03c4; the code uses hard positive/negative masks (pcbev.py:221-241).\n- Yaw range: the paper text says 0.2 rad, the config uses 0.4. The 0.4 value matches the paper's Fig. 9 / Table 1 number (0.458).\n- Depth weight 3.0 is not in the paper.\n- The paper says a \"pre-trained 2D detector\" is used. In the code this is the `Img_Aux` head trained in the DG stage.\n- The paper states object-centre depth beats LiDAR depth (Table 5), which matches the code.\n\n## 3. Configs\n\n### 3.1 `configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py`\n- **Model:** `PCBEV_DG` (:59). ResNet-50, `pretrained=/mnt/cfs/.../resnet50-0676ba61.pth` (torchvision ImageNet weights, :61), out_indices (2, 3). CustomFPN 512 channels at stride 16 (:84-90).\n- **Training-only modules:**\n  - `img_aug=Img_Aux` (512 in, upsample [1, 2, 1], channels [256, 128, 70]) (:71-76);\n  - `bev_img_aux=Img_Aux_Dy` (80 in, layers [2, 1, 1], upsample [2, 1, 1]) (:77-83);\n  - `LSSViewTransformer_pc` with `BEV_Aux` (256 in, [2, 2, 2], height_num 4, channels [80, 80, 84]), `downsample_from_ann=2`, `downsample=16` (:91-107).\n- **Grid and range:** x/y [-51.2, 51.2, 0.8] \u2192 128\u00b2; z [-5, 3, 8] \u2192 1 bin; depth [1, 100, 1] \u2192 99 virtual-depth bins (:47-52). point_cloud_range \u00b151.2 / [-5, 3]; voxel 0.1; out_size_factor 8 (:7, 54, 145-155).\n- **Input and augmentation:** input (384, 704) (:25). Image augmentation: resize (-0.06, 0.11), rotation \u00b15.4\u00b0, flip, crop_h (0, 0.1) (:28-32). Virtual-camera perturbation: pitch/roll \u00b10.04 rad, yaw \u00b10.4 rad, xyz \u00b12 m (:34-39). BDA: rotation \u00b122.5\u00b0, scale 0.95\u20131.05, flips (:184-188).\n- **Head:** CenterHead with 6 tasks / 10 nuScenes classes (:116-176).\n- **Train pipeline additions (:190-214):** `PrepareImageInputs_UDA`; `LoadPointsFromFile_UDA` (use_dim 3) and `PointToMultiViewDepth_UDA` (outputs unused by PCBEV); `Load3DBoxesHeatmap(downsample_feature=8)`. `Collect3D` adds `gt_depth`, `gt_depth_real`, `heatmaps_2d`, `ann_maps_2d`, `heatmap_masks_2d`, their `_aug` versions, and `bev_aug`.\n- **Data:** CBGS + `NuScenesDataset` (`img_info_prototype='bevdet'`) on `bevdetv2-nuscenes_infos_{train,val}.pkl`.\n- **Optimisation:** samples_per_gpu 4 (paper: 8 GPUs, total batch 32). AdamW 2e-4, weight decay 0.01, grad-clip 5. Linear warm-up 20 iterations; step [24] is never reached, so the LR is constant. **23 epochs.** `MEGVIIEMAHook` (init_updates 10560) also writes `epoch_N_ema.pth`. No `load_from`; the base eval interval of 24 never triggers.\n\n### 3.2 `configs/PDBEV/pdbev-uda-NUS2LYFT.py`\n- **Model:** `PCBEV_UDA`, `loss_flag='Focal'`, thr 0.9 (:18-19, 69-71); modules identical to DG. Source/target/test classes are nuScenes-10 / Lyft-9 / [car, truck, bicycle, pedestrian] (:22-26). Rotation augmentation \u00b125.4\u00b0 (:37).\n- **Data:** `UDA_DA_Lyft` with `ann_file_source` = nuScenes train pkl, `ann_file_target` = `lyft_infos_ori_ann_train.pkl`, val = Lyft val (:190-290). `Target_Domain` is collected (:223).\n- **Schedule:** lr 2e-4, warm-up 200, step [12] (never reached), 3 epochs (:293-301).\n- **Implicit settings:** the source CBGS index file and 5000 samples per epoch are hard-coded in the dataset class.\n\n### 3.3 Diff vs `configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py` (the `BEVDepth_DG` baseline)\n- **Model:** the baseline uses `BEVDepth_DG` + `LSSViewTransformerBEVDepth_DG` (:52, 72-79) with no `img_aug`, `bev_img_aux` or `BEV_Aux`.\n- **Augmentation:** extrinsic perturbation \u00b10.01 (:31-33). It is computed but the baseline never uses it; PD-BEV uses 0.04 / 0.4 / 0.04 and \u00b12 m.\n- **Depth labels:** the baseline supervises depth with LiDAR `gt_depth` (but see bug 13); PD-BEV uses box depth from `ann_maps_2d`. The baseline loads LiDAR with use_dim 5 (PD-BEV: 3) and has no `Load3DBoxesHeatmap`.\n- **Schedule:** samples_per_gpu **8** (:231, i.e. 64 total on 8 GPUs vs PD-BEV's 32), warm-up 200 vs 20, 24 vs 23 epochs.\n- **Test pipeline:** the baseline loads LiDAR points (:192-197).\n- **Same in both:** grid, depth bins, input size, head, optimiser.\n- **Other evaluation configs:** `-pc-lyft.py` has a single **car** task (:92). `-pc-da.py` has 5 DeepAccident tasks, so a NUS checkpoint loads with size-mismatched heads.\n\n## 4. Data requirements (summary; full list in `data_requirements`)\n- **Info format:** the \"uniform format\" is BEVDet-v2 infos. Per sample: `cams[name]` with `data_path`/`image_path`, `cam_intrinsic`, `sensor2ego_rotation` (wxyz) and `sensor2ego_translation` (optionally per-camera `ego2global`); `ann_infos` = (N\u00d79 ego-frame gravity-centre boxes [x, y, z, l, w, h, yaw, vx, vy], label indices); `gt_names` and `valid_flag` for CBGS; `lidar_path` plus LiDAR\u2192ego transforms; `timestamp`; `token`; `scene_token`.\n- **Converters:**\n  - `tools/Lyft_converter.py` adds `ann_infos` to the mmdet3d `lyft_infos_*.pkl`. It is buggy and writes the wrong file name/classes; the configs need `.mim/tools/add_anno_bevdet_lyft1.py`.\n  - `tools/Deepaccident_converter.py` turns DeepAccident `carla_infos_*.pkl` into `bevdetv4-DeepAccident_infos_*.pkl`. It y-flips the boxes, adds 1.9 m to z, derives `sensor2ego` from the LiDAR/camera matrices, and writes no intrinsics.\n- **Pre-computed resources:** none for DG. UDA needs CBGS index pkls (missing).\n- **LiDAR:** the released pipelines load it, but PD-BEV's losses do not need it.\n\n## 5. Rig assumptions that break on other rigs\nFull list in `rig_assumptions`. Key ones:\n- six hard-coded camera names that override `data_config['cams']` (loading_UDA.py:492-501);\n- N=6 reshape in UDA (pcbev.py:374);\n- default DeepAccident intrinsics (loading_UDA.py:517-526);\n- virtual depth with f0=450 and fixed bins 1..51 for rendering;\n- hard-coded 0.8 m voxel and square-grid indexing;\n- IFV z-bins tied to the ego-origin height;\n- camera-0 image size used for every camera when building 2D targets;\n- different train/test crop policies;\n- stride coupling (feature 16 \u2194 targets 8);\n- BatchNorm on raw camera parameters;\n- class 0 must be `car`;\n- pinhole-only camera model.\n\n## 6. Port plans (steps in `port_plan`)\n\n**Minimal contract of the PD-BEV training branch, for any base:**\n- **Inputs:**\n  - the BEV map (B, C, Y, X) with known xy range/resolution and a z-range for the IFV;\n  - per-camera image features (B, N, C_i, h, w);\n  - per-camera geometry: net-input intrinsics after augmentation (or lidar2img) and camera\u2192BEV-frame extrinsics, plus the BDA matrix if any;\n  - sampled virtual extrinsics per camera;\n  - 3D GT boxes in the BEV frame.\n- **Outputs:** the 2D target maps at the head's stride for real and virtual cameras, and the BEV car-heatmap target.\n- **Not required:** a predicted depth distribution. Rendering sums the IFV uniformly along rays. Only L_pg needs an LSS depth head.\n\n**(a) Another BEVDet-family BEVDepth.**\n- Decide first whether to keep your BEVDepth test graph (recommended for parity with UniDrive/UDGA/CoIn3D) or adopt `BEVDepth_DG`'s virtual depth and 31-d MLP.\n- Port the three modules from `img_aux.py`, a renderer mixin, a training-only detector subclass, and a rig-agnostic `Load3DBoxesHeatmap` plus virtual-camera sampling in the pipeline.\n- `dev2.1`/`dev3.0` use 4\u00d74 `sensor2ego`/`ego2global` instead of rots/trans (BEVDet@origin/dev3.0 view_transformer.py:141,745). Adapt the frustum and perturbation code accordingly.\n- Effort: **M**.\n\n**(b) BEVFormer-small.**\n- **BEV map:** tap `outs['bev_embed']` (bevformer_head.py:205-206), shape (22500, B, 256) \u2192 (B, 256, 150, 150) with rows = y and cols = x (encoder.py:60-71).\n- **Camera geometry:** `img_metas['lidar2img']` (scaled by `RandomScaleImageMultiViewImage`, transform_3d.py:302-320) and `img_metas['lidar2cam']`. `cam_intrinsic` is not collected (transform_3d.py:246-253), so derive K = lidar2img\u00b7lidar2cam\u207b\u00b9.\n- **Image features:** stride-32 FPN features (1 level).\n- **GT:** LiDAR-frame boxes in the mmdet3d 0.17.1 convention; use `.gravity_center` / `.corners`.\n- **Applicability:** L_ps, IFV, rendering for real and virtual cameras, RenderNet, the BEV auxiliary loss (with self-generated Gaussian targets) and L_con all apply. L_pg and virtual depth do **not** apply, because there is no depth distribution.\n- **No reference code:** the paper claims a BEVFormer result (Table 3: Nus\u2192Lyft car mAP 0.084\u21920.208), but that code is not released.\n- **Base caveat for R1-c10:** BEVFormer itself hard-codes 6 cameras (`cams_embeds`, `num_cams`).\n- Effort: **L**.\n\n## 7. Bugs and inconsistencies (full list in `bugs_or_gaps`)\n- **README:**\n  - `pip install -e .` cannot work (no `setup.py`);\n  - empty pkl link (:29);\n  - `c` placeholder (:44);\n  - `pcbev-uda-NUS2LYFT.py` does not exist (:48);\n  - `epoch_24.pth` does not exist (:59).\n- **Scripts:**\n  - `/mnt/cfs` dumps crash testing (tools/test.py:245; lyft_dataset_DA.py:163; \u2026);\n  - anomaly detection left on (tools/train.py:120);\n  - `evaluate` requires `save_path`, which breaks `EvalHook`;\n  - `PCBEV_*.simple_test` is broken.\n- **Method:** transposed IFV sampling (view_transformer_pc.py:387); `bev_loss` uses `eq(0)` (centerpoint_head.py:659); UDA consistency sign (pcbev.py:253-257); virtual-camera translation mismatch (loading_UDA.py:549-550 vs 538-543/1024-1028).\n- **Baseline:** `torch.max` depth downsampling disables LiDAR depth supervision (view_transformer_pc.py:635 vs upstream `torch.min`).\n- **Data:**\n  - Lyft converter NameError (:97) and wrong output file and classes;\n  - UDA CBGS pkls missing;\n  - `UDA_DA_Nus` not registered;\n  - DA2NUS / LYFT2NUS configs validate on Lyft;\n  - cross-dataset NDS printed by the code is not the paper's NDS\\*. The paper defines NDS\\* = (3\u00b7mAP + \u03a3_{ATE, ASE, AOE}(1 \u2212 err))/6, car only, within \u00b150 m; this formula reproduces Table 1's oracle rows.\n\n## 8. License\n- The repo has no LICENSE file now and never had one (git history is empty for LICENSE and `setup.py`).\n- The BEVDet / mmdet3d parts remain Apache-2.0, and their notice was dropped.\n- The CC BY 4.0 licence on arXiv covers the paper only, not the code.\n- Before publishing a port on GitHub, ask the authors for a licence or re-implement from the paper. Keep the Apache-2.0 attribution either way.",
+ "components": [
+  {
+   "name": "PCBEV_DG detector (DG training wrapper)",
+   "files": [
+    "mmdet3d/models/detectors/pcbev.py:17-151"
+   ],
+   "role": "Subclass of BEVDet. extract_img_feat (69-107) runs the BEVDepth trunk through LSSViewTransformer_pc. It then runs the training-only branches: Img_Aux on image features (88), BEV_Aux/IFV (90-92), ray rendering for real cameras (91) and perturbed virtual cameras (76-79, 92), Img_Aux_Dy RenderNet losses (93-94) and the BEV heatmap (95). forward_train (126-151) adds box-centre depth BCE from ann_maps_2d (142-143), the CenterHead loss and bev_loss (53-57). simple_test (110-124) is broken (wrong extract_img_feat signature, needs train-only bev_aug), so evaluation uses BEVDepth_DG.",
+   "method_specific": true,
+   "port_notes": "Re-implement as a training-only subclass of the target detector. Do not override the base test path. Export deploy checkpoints without the img_aux/bev_img_aux/BEV_aux keys."
+  },
+  {
+   "name": "PCBEV_UDA detector (UDA fine-tuning)",
+   "files": [
+    "mmdet3d/models/detectors/pcbev.py:155-435"
+   ],
+   "role": "Fine-tunes from the DG checkpoint (tools/train.py --checkpoint). Splits each batch by Target_Domain (Data_split 413-435). Source samples get the DG losses (bev_loss disabled). Target samples get only loss_2Dconsis_target (neg_person 243-258, class 0, thr 0.9) between the detached Img_Aux heatmap and the rendered heatmap. Target self-training losses are computed but never added (316, 323). The BEV pseudo-label branch is commented out (383-386). Has a hard-coded 6-camera reshape (374) and a loss-sign bug with loss_flag='Focal'.",
+   "method_specific": true,
+   "port_notes": "Not needed for Gen2E's DG protocol (train on R1, test on variants). If ported: fix the sign, remove N=6, and use the same camera-aware SE path for the target RenderNet."
+  },
+  {
+   "name": "LSSViewTransformer_pc (lift + perspective-rendering utilities)",
+   "files": [
+    "mmdet3d/models/necks/view_transformer_pc.py:172-235",
+    "mmdet3d/models/necks/view_transformer_pc.py:243-498"
+   ],
+   "role": "LSS lift with virtual-depth bins rescaled by k=f_eff/450 (259-282, 488-498); DepthNet with a 31-d camera vector (255-256, 394-422); caches frustum coordinates self.coor (303). Rendering utilities: get_bev_coor (362-366, hard-coded 0.8 m xy cell, z-bin int(8/4)=2 m), get_feature_Voxel2Frutums (368-391, indexes [Z,X,Y] on a [Z,Y,X] tensor), nerf (358-360, sums depth bins 1..51), get_PV_feats (310-315), get_lidar_coor_aug/get_PV_feats_aug (317-350), get_BEV_feats_from_voxel (352-356). Box-depth loss with downsample_from_ann=2 and min-pooling (429-485).",
+   "method_specific": true,
+   "port_notes": "Port as a mixin on the target view transformer. Derive cell size/extent from grid_config. Index the IFV as [z,y,x]. Gather only the depth bins actually summed. Vectorise the per-batch loop. Needs the non-accelerated bev_pool path, or recomputed frustum coordinates."
+  },
+  {
+   "name": "LSSViewTransformerBEVDepth_DG + DepthNet(31) (deployed view transformer / repo baseline)",
+   "files": [
+    "mmdet3d/models/necks/view_transformer_pc.py:503-661",
+    "mmdet3d/models/necks/view_transformer.py:461-523"
+   ],
+   "role": "Same forward as LSSViewTransformer_pc but without the rendering helpers; it is what PD-BEV checkpoints are evaluated with. Its LiDAR depth loss downsamples labels with torch.max (635), which drops nearly all labels. State dict is compatible with LSSViewTransformer_pc (depth_net.*). This is DG-BEV-style intrinsic-normalised depth, not a PD-BEV contribution.",
+   "method_specific": false,
+   "port_notes": "Needed only if you adopt virtual depth plus the 31-d camera MLP for PD-BEV-on-BEVDepth. Otherwise keep your base BEVDepth view transformer."
+  },
+  {
+   "name": "BEVDepth_DG detector (test-time model for all PD-BEV checkpoints and the -pc- baselines)",
+   "files": [
+    "mmdet3d/models/detectors/bevdepth.py:73-154",
+    "configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:52-79"
+   ],
+   "role": "BEVDet trunk + LSSViewTransformerBEVDepth_DG. Expects an 8-tuple img_inputs that includes the post-augmentation intrinsics (84-91). Its training supervises virtual-depth LiDAR gt_depth (145-149), which is broken by the max-pool bug.",
+   "method_specific": false,
+   "port_notes": "Equivalent to your base detector if you skip virtual depth. Evaluate PD-BEV with the unmodified base model."
+  },
+  {
+   "name": "BEV_Aux (BEV decoder -> implicit foreground volume, IFV)",
+   "files": [
+    "mmdet3d/models/necks/img_aux.py:777-874"
+   ],
+   "role": "BasicBlock stack [80,80,84] on the BEV-encoder output (256 channels). Splits off 4 height channels and 80 feature channels; IFV = height x feature outer product, shape (B,80,4,Y,X) (869-871). No sigmoid, although paper Eq.3 has one. Trained only indirectly through the rendering losses and the BEV auxiliary loss.",
+   "method_specific": true,
+   "port_notes": "Portable as-is. Set the input channels to the base's BEV channels (256 for both BEVDepth and BEVFormer-small). Decide whether to add the sigmoid."
+  },
+  {
+   "name": "Img_Aux (2D detector on image features, L_ps)",
+   "files": [
+    "mmdet3d/models/necks/img_aux.py:57-135",
+    "mmdet3d/models/necks/img_aux.py:142-494"
+   ],
+   "role": "CenterNet-style head on image-neck features (512 channels, stride 16, upsampled to stride 8). Outputs per-class sigmoid heatmaps (Gaussian focal loss) and 6 regression channels per class [du,dv,d_virtual,l,w,h] (masked L1 averaged over all pixels, 316-352). pseudo() (355-397) does thresholded self-training for UDA, but its loss is unused.",
+   "method_specific": true,
+   "port_notes": "Portable. Choose upsampling so that the output stride equals the 2D-target stride (stride 32 on BEVFormer-small)."
+  },
+  {
+   "name": "Img_Aux_Dy (RenderNet on rendered PV features, L_render)",
+   "files": [
+    "mmdet3d/models/necks/img_aux.py:501-774"
+   ],
+   "role": "Camera-aware SE (BatchNorm1d(31) + MLP, 527-529, 741-751) followed by a conv stack on rendered PV features (80 channels, upsample x2). Heatmaps and attributes are supervised with real depth (depth_flag='real'). get_heatmaps (723-739) is reused on the height-summed IFV for the BEV auxiliary heatmap. pseudo() (702-721) skips the SE.",
+   "method_specific": true,
+   "port_notes": "Portable. Redefine the camera vector for each base (BEVFormer has no post_rot or BDA). Use one consistent path for source and target."
+  },
+  {
+   "name": "CenterHead additions (BEV auxiliary loss, pseudo losses, yaw weight)",
+   "files": [
+    "mmdet3d/models/dense_heads/centerpoint_head.py:293",
+    "mmdet3d/models/dense_heads/centerpoint_head.py:313-323",
+    "mmdet3d/models/dense_heads/centerpoint_head.py:606-679",
+    "mmdet3d/models/dense_heads/centerpoint_head.py:697",
+    "mmdet3d/models/dense_heads/centerpoint_head.py:760-766",
+    "mmdet3d/models/dense_heads/centerpoint_head.py:778-814"
+   ],
+   "role": "loss() caches the GT heatmaps (697) for bev_loss (651-664): task-0 target upsampled x2 bicubic vs the BEV heatmap, positive mask eq(0), unreduced. loss_pseudo, bev_loss_pseudo and pseudo_loss are BEV pseudo-label losses that the released configs never use. yaw_weight scales the yaw loss per task (used by the Lyft config).",
+   "method_specific": true,
+   "port_notes": "Generate the BEV auxiliary target inside the detector (head.get_targets task 0, or draw_heatmap_gaussian) instead of keeping state in the head. Fix the mask to eq(1) if fixing bugs."
+  },
+  {
+   "name": "PrepareImageInputs_UDA (image aug, actual intrinsics, virtual-camera sampling)",
+   "files": [
+    "mmdet3d/datasets/pipelines/loading_UDA.py:174-672"
+   ],
+   "role": "Loads 6 cameras (names hard-coded, 492-501). Applies resize/crop/flip/rotate (238-265; test crop is random, 259-262). Computes post-augmentation intrinsics (591-595). Samples per-camera virtual extrinsics by Euler perturbation (pitch/yaw/roll + xyz, 361-479) and stores bev_aug rot_augs/tran_augs plus the quaternion and translation used for targets (538-543, 547-550, 656-657), and an img_aug record (601). Falls back to hard-coded DeepAccident intrinsics (517-526).",
+   "method_specific": true,
+   "port_notes": "Add the virtual-camera sampling to the base pipeline with the camera list taken from config. Use one absolute perturbed camera pose (R_aug, t+delta) for both rendering and targets."
+  },
+  {
+   "name": "Load3DBoxesHeatmap (on-the-fly 2D targets from 3D GT)",
+   "files": [
+    "mmdet3d/datasets/pipelines/loading_UDA.py:808-1130"
+   ],
+   "role": "Projects ego-frame GT (ann_infos) into each real camera (get_2D_heatmap 859-992) and virtual camera (get_2D_aug_heatmap 997-1123) with the original K plus the image-augmentation matrices. Outputs heatmaps_2d [N,H/8,W/8,C], ann_maps_2d [N,H/8,W/8,7,C] = [du,dv,d_virtual,l,w,h,d_real] and heatmap_masks_2d. Gaussian radius comes from the projected 2D box size.",
+   "method_specific": true,
+   "port_notes": "Make it rig-agnostic: per-camera image sizes, validity checked after augmentation, stride from config, camera list from config, box API (gravity_center/corners) for convention safety."
+  },
+  {
+   "name": "LiDAR depth pipeline (LoadPointsFromFile_UDA + PointToMultiViewDepth_UDA)",
+   "files": [
+    "mmdet3d/datasets/pipelines/loading_UDA.py:36-170",
+    "mmdet3d/datasets/pipelines/loading_UDA.py:678-803",
+    "mmdet3d/datasets/pipelines/loading.py:704-830"
+   ],
+   "role": "Builds virtual and real depth maps (gt_depth, gt_depth_real) at input resolution from LiDAR. Consumed only by the BEVDepth_DG baseline; PD-BEV's losses never read them.",
+   "method_specific": false,
+   "port_notes": "Drop it for PD-BEV if box-centre depth is used. Provide a dummy gt_depth only if porting the UDA Data_split."
+  },
+  {
+   "name": "LoadAnnotationsBEVDepth (8-tuple img_inputs)",
+   "files": [
+    "mmdet3d/datasets/pipelines/loading.py:1421-1502"
+   ],
+   "role": "BEV data augmentation (BDA) of the GT and the bda matrix (upstream behaviour). If the post-augmentation intrinsics are present, appends them as the 8th element (1495-1499).",
+   "method_specific": false,
+   "port_notes": "The base already has BDA; just carry the actual intrinsics, or recompute them in the model from intrins + post_rot."
+  },
+  {
+   "name": "Datasets, UDA mixing and cross-dataset evaluation",
+   "files": [
+    "mmdet3d/datasets/nuscenes_dataset.py:551-593",
+    "mmdet3d/datasets/lyft_dataset.py:621-1252",
+    "mmdet3d/datasets/lyft_dataset_DA.py:58-548",
+    "mmdet3d/datasets/DeepAccident_dataset.py:240-700",
+    "mmdet3d/datasets/UDA_DA_LYFT_dataset.py:61-830",
+    "mmdet3d/datasets/dataset_wrappers.py:8-90"
+   ],
+   "role": "BEVDet-v2-style info loading for nuScenes, Lyft and DeepAccident. evaluate(results, save_path, ...) signature. Car-only cross-dataset NDS* evaluation with Source/Target/Test class remapping (lyft_dataset_DA.py:317-488). UDA_DA_Lyft mixes CBGS-indexed source with shuffled target 1:1 (5000 samples/epoch, per-worker domain alternation 809-811). CBGSDataset gains a flag attribute.",
+   "method_specific": false,
+   "port_notes": "Not needed for Gen2E; use the Gen2E datasets and evaluation protocol for every baseline."
+  },
+  {
+   "name": "Converters to the 'uniform' info format",
+   "files": [
+    "tools/Lyft_converter.py",
+    "tools/Deepaccident_converter.py",
+    "mmdet3d/.mim/tools/add_anno_bevdet_lyft1.py"
+   ],
+   "role": "Add ego-frame ann_infos (9-d gravity-centre boxes + labels) and scene_token to the mmdet3d Lyft infos. For DeepAccident, also add sensor2ego extrinsics (y-flip, +1.9 m z). The released Lyft converter is broken and produces a different file than the configs need; the matching script exists only in .mim.",
+   "method_specific": false,
+   "port_notes": "For Gen2E rigs, write your own converter emitting K, sensor2ego and ego-frame boxes per camera."
+  },
+  {
+   "name": "Train/test script changes",
+   "files": [
+    "tools/train.py:38",
+    "tools/train.py:120",
+    "tools/train.py:226-228",
+    "tools/test.py:245",
+    "tools/test.py:263-265",
+    "mmdet3d/apis/train.py:207-223"
+   ],
+   "role": "--checkpoint initialisation for UDA; anomaly detection left enabled; hard-coded output dump; evaluate called with save_path; dataloader shuffle flag.",
+   "method_specific": false,
+   "port_notes": "Keep only the --checkpoint idea (or use load_from); drop the rest."
+  },
+  {
+   "name": "MEGVIIEMAHook (upstream, unchanged)",
+   "files": [
+    "mmdet3d/core/hook/ema.py:62-116"
+   ],
+   "role": "Exponential moving average of the model (decay 0.999, init_updates 10560 from config); saves epoch_N_ema.pth next to epoch_N.pth.",
+   "method_specific": false,
+   "port_notes": "Decide whether to evaluate the EMA or the raw checkpoint, and do the same for all baselines."
+  },
+  {
+   "name": "Unused leftovers",
+   "files": [
+    "mmdet3d/models/backbones/context_cluster.py",
+    "mmdet3d/models/backbones/context_cluster2.py",
+    "mmdet3d/models/backbones/context_cluster3.py",
+    "mmdet3d/datasets/shift_dataset.py",
+    "mmdet3d/datasets/CARLA_dataset.py",
+    "mmdet3d/datasets/nuscenes_dataset_DA.py",
+    "mmdet3d/datasets/lyft_dataset_pkl.py",
+    "mmdet3d/datasets/UDA_DA_Nus_dataset.py",
+    "mmdet3d/datasets/pipelines/loading_plug.py",
+    "mmdet3d/datasets/pipelines/loading_UDA.py:1290-2700",
+    "mmdet3d/models/detectors/bevdet_intri.py",
+    "mmdet3d/datasets/dataset_wrappers.py:93-180"
+   ],
+   "role": "Experiment code that no released config references (Context-Cluster backbones; SHIFT/CARLA datasets; PrepareImageInputs_DG*; CBGSDataset_UDA; UDA_DA_Nus is not even imported).",
+   "method_specific": false,
+   "port_notes": "Ignore."
+  }
+ ],
+ "data_requirements": [
+  "Info pkl format: BEVDet-v2 style dict {'infos': [...], 'metadata': {'version': ...}}. LyftDataset_my-based classes require metadata.version. Infos are sorted by 'timestamp'.",
+  "Per-camera fields read: cams[name]['data_path'] or ['image_path'], ['cam_intrinsic'] (3x3; if missing, hard-coded DeepAccident K is used), ['sensor2ego_rotation'] (wxyz quaternion), ['sensor2ego_translation'], optional per-camera ['ego2global_rotation'/'ego2global_translation'] (nuScenes). Lyft/LyftDataset_my.get_data_info also reads ['sensor2lidar_rotation'/'sensor2lidar_translation'] when use_camera is set.",
+  "Camera names must be exactly CAM_FRONT_LEFT, CAM_FRONT, CAM_FRONT_RIGHT, CAM_BACK_LEFT, CAM_BACK, CAM_BACK_RIGHT or Camera_FrontLeft, Camera_Front, Camera_FrontRight, Camera_BackLeft, Camera_Back, Camera_BackRight (hard-coded in loading_UDA.py:492-501). data_config['cams'] is ignored.",
+  "Per-sample fields: 'ann_infos' = (list of 9-d ego-frame boxes [x, y, z (gravity centre), l, w, h, yaw, vx, vy], list of int labels indexing the dataset's class list); 'gt_names' (CBGS get_cat_ids); 'valid_flag' (nuScenes use_valid_flag=True); 'lidar_path'; 'lidar2ego_rotation/translation' + 'ego2global_rotation/translation' (nuScenes/Lyft) or 'lidar_to_ego_matrix' (DeepAccident); 'timestamp'; 'token' (Lyft sample_idx and evaluation); 'sweeps' (LyftDataset_my.get_data_info); 'scene_token'.",
+  "nuScenes: bevdetv2-nuscenes_infos_{train,val}.pkl from upstream BEVDet@2ae6a02 tools/create_data_bevdet.py (create_nuscenes_infos + add_ann_adj_info, lines 85-128). That script is not shipped in PD-BEV (only a copy under mmdet3d/.mim/tools).",
+  "Lyft: configs need data/lyft/lyft_infos_ori_ann_{train,val}.pkl with Lyft-9-class labels [car, truck, bus, emergency_vehicle, other_vehicle, motorcycle, bicycle, pedestrian, animal]. Only the unreleased mmdet3d/.mim/tools/add_anno_bevdet_lyft1.py produces them, from mmdet3d's lyft_infos_{train,val,test}.pkl (made by mmdet3d create_data with lyft_dataset_sdk; that driver is not in this repo). The released tools/Lyft_converter.py instead writes lyft_infos_ann_*.pkl with nuScenes-10-class labels, and crashes.",
+  "DeepAccident: bevdetv4-DeepAccident_infos_{train,val}.pkl from tools/Deepaccident_converter.py applied to DeepAccident's official carla_infos_{train,val}.pkl. Input fields: gt_boxes, gt_velocity, gt_names, camera_visibility, scenario_type, vehicle_name, scene_name, cams[*]['lidar_to_camera_matrix'], lidar_to_ego_matrix. Output adds ann_infos (y-flipped, z+1.9 m, visible boxes only, classes [car, truck, van, motorcycle, bicycle, pedestrian] with van->truck and cyclist->bicycle), scene_token and per-camera sensor2ego_rotation/translation. No cam_intrinsic, so the pipeline's hard-coded K is used. LiDAR is .npz with key 'data' (N,4).",
+  "UDA only: CBGS index lists data/nuscenes/nus_train_cbgs.pkl, data/lyft/lyft_train_cbgs.pkl, data/DeepAccident_data/da_train_cbgs.pkl (indices into the timestamp-sorted source infos, as produced by CBGSDataset._get_sample_indices). Not shipped and not generated by any released code. UDA target infos also need ann_infos, because samples with no GT are filtered out.",
+  "LiDAR point files: required by the released train pipelines (LoadPointsFromFile_UDA + PointToMultiViewDepth_UDA; nuScenes/Lyft float32 .bin, load_dim 5) and by the -pc- test pipelines. PD-BEV's own losses do not use LiDAR depth, so these steps can be removed for PD-BEV DG training.",
+  "No pre-computed 2D detector outputs, depth maps or semantic masks. All 2D supervision (heatmaps, offsets, virtual/real object depth, dimensions) is generated on the fly from the 3D GT for real and virtual cameras (Load3DBoxesHeatmap). UDA pseudo-labels come online from the model's own Img_Aux head.",
+  "ImageNet ResNet-50 weights: torchvision resnet50-0676ba61.pth, referenced by a hard-coded /mnt/cfs path in every config (e.g. configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:61). No other pretrained checkpoint (no load_from).",
+  "For Gen2E rigs, PD-BEV needs per camera: pinhole K at native resolution, camera-to-ego extrinsics, image size, and 3D GT boxes in the ego frame. LiDAR is optional unless you keep LiDAR depth supervision."
+ ],
+ "rig_assumptions": [
+  {
+   "assumption": "Exactly six hard-coded camera names (nuScenes CAM_* or DeepAccident-style Camera_*), chosen by whether CAM_FRONT or Camera_Front is present. data_config['cams'] and 'Ncams' are ignored (choose_cams is never called).",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:492-501 (choose_cams 227-236)",
+   "impact": "Rigs with other camera names crash (cam_names unbound). A 10-camera rig that contains CAM_FRONT silently loads only the 6 listed cameras, so R1-c10 would be evaluated with 6 cameras unless this is made config-driven."
+  },
+  {
+   "assumption": "UDA reshapes the depth tensor by 6 cameras.",
+   "location": "mmdet3d/models/detectors/pcbev.py:373-374",
+   "impact": "Crash or silent mis-split for N != 6 in UDA mode. The DG path infers N from tensor shapes."
+  },
+  {
+   "assumption": "Fallback intrinsics (fx=fy=1142.52, or 560.17 for Camera_Back; cx=800, cy=450) whenever 'cam_intrinsic' is missing.",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:517-526",
+   "impact": "Any rig whose infos lack cam_intrinsic is silently given DeepAccident 1600x900 intrinsics."
+  },
+  {
+   "assumption": "Virtual depth: depth bins [1,100) m in a space normalised to a canonical focal of 450 px; real depth = d_virtual * f_eff/450 with f_eff = sqrt(2)/sqrt(1/fx'^2+1/fy'^2) at network-input scale.",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:257,268-273,510,520-525; mmdet3d/datasets/pipelines/loading_UDA.py:684-693,819,909-910",
+   "impact": "The depth range covered scales with focal length: nuScenes at 0.44 scale (f about 557) covers about 1.2-124 m, while f=200 covers only 0.4-44 m (BEV corners unreachable). This is part of the deployed BEVDepth_DG network, so it directly affects R1-f and short- or long-focal rigs."
+  },
+  {
+   "assumption": "Ray rendering sums a fixed set of depth bins 1..51 (virtual depth 2-52).",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:358-360",
+   "impact": "The rendered range in metres changes with focal length; far objects drop out of the rendered views on short-focal rigs."
+  },
+  {
+   "assumption": "IFV cell size hard-coded to 0.8 m in xy when converting frustum points to IFV indices.",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:362-366",
+   "impact": "Must equal the grid_config x/y interval. Any BEV-resolution change (e.g. BEVFormer's 0.683 m) silently misaligns the rendering."
+  },
+  {
+   "assumption": "IFV height: height_num=4 bins of int(8/4)=2 m over z in [-5,3] of the ego frame.",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:253,386; configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:98",
+   "impact": "Assumes an ego origin near the ground (nuScenes ego frame). Rigs or frames with a different origin height (DeepAccident +1.9 m shift, BEVFormer's LiDAR frame) shift objects between bins."
+  },
+  {
+   "assumption": "Square BEV grid hidden by [Z,X,Y] indexing of a [Z,Y,X] tensor.",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:373-387",
+   "impact": "Only works because the grid is 128x128. Non-square grids index out of range or are masked wrongly; it is also the transposition bug."
+  },
+  {
+   "assumption": "All cameras share one image size (camera 0's), and the 2D-target validity test uses pre-augmentation image bounds.",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:868-876,898,1007-1014,1033",
+   "impact": "Heterogeneous-resolution rigs (Lyft mixes 1224x1024 and 1600x900; possibly R2-R9) get wrong validity masks and drop or keep the wrong objects."
+  },
+  {
+   "assumption": "Width-fit resize (fW/W). Training uses a bottom-biased random crop; testing uses a centre crop with random jitter.",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:238-265",
+   "impact": "For non-16:9 images (e.g. Lyft 4:3) train and test see different vertical regions (about 50-100 px offset), and test results are non-deterministic."
+  },
+  {
+   "assumption": "Feature-stride / target-stride coupling: features at stride 16 (downsample=16), targets at stride 8 (Load3DBoxesHeatmap downsample_feature=8), downsample_from_ann=2, Img_Aux upsample [1,2,1], Img_Aux_Dy upsample [2,1,1].",
+   "location": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:71-107,206; mmdet3d/models/necks/view_transformer_pc.py:458-466",
+   "impact": "These must change together for other input sizes or backbones (BEVFormer-small uses stride 32); a mismatch crashes with view() errors or silently misaligns targets."
+  },
+  {
+   "assumption": "Camera-aware MLPs with BatchNorm1d on raw 31-d camera vectors (4 intrinsics, 4 post-augmentation intrinsics, 6 post-rot/post-trans entries, 5 BDA entries, 12 sensor2ego entries).",
+   "location": "mmdet3d/models/necks/view_transformer_pc.py:192-196,394-422; mmdet3d/models/necks/img_aux.py:527-529",
+   "impact": "BatchNorm running statistics fit the training rig; unseen rigs feed out-of-distribution camera vectors to the test-time DepthNet (an inherent generalisation risk of this BEVDepth variant)."
+  },
+  {
+   "assumption": "Virtual-camera perturbation ranges centred on the training rig: yaw +-0.4 rad, pitch/roll +-0.04 rad, translation +-2 m.",
+   "location": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:34-39; mmdet3d/datasets/pipelines/loading_UDA.py:361-381,406",
+   "impact": "Defines the extrinsic diversity PD-BEV trains for (rendering only; input images are not warped). Relevant when comparing with the R1-r and R1-t variants."
+  },
+  {
+   "assumption": "Class index 0 must be 'car' for the BEV auxiliary loss and the UDA consistency/pseudo-labels (bev_index = pseudo_index = [0]).",
+   "location": "mmdet3d/models/dense_heads/centerpoint_head.py:313,319; mmdet3d/models/detectors/pcbev.py:28,172; mmdet3d/models/necks/img_aux.py:168,531",
+   "impact": "A different class order changes which class receives this supervision."
+  },
+  {
+   "assumption": "BEV range +-51.2 m (128x128 at 0.8 m), CenterHead out_size_factor 8 on a 1024 grid, post_center_range +-61.2 m.",
+   "location": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:7,47-54,133,145-165",
+   "impact": "Range changes need consistent edits, including the hard-coded 0.8 in get_bev_coor."
+  },
+  {
+   "assumption": "BEVDet-v2 frame conventions: boxes in the key-frame ego frame (defined via CAM_FRONT's ego pose), 9-d gravity-centre boxes, camera sensor2ego, ego_cam 'CAM_FRONT'/'Camera_Front' used as the key-ego reference.",
+   "location": "tools/Lyft_converter.py:60-62; mmdet3d/datasets/pipelines/loading_UDA.py:267-349,832-851",
+   "impact": "Rig data must provide ego-frame boxes and sensor2ego for every camera, plus an ego reference camera; otherwise the projections are wrong."
+  },
+  {
+   "assumption": "Pinhole cameras only (no distortion model).",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:832-851; mmdet3d/models/necks/view_transformer_pc.py:259-282",
+   "impact": "Fisheye or strongly distorted rigs need undistortion first."
+  },
+  {
+   "assumption": "LiDAR file format detected from the filename ('DeepAccident' or 'Town' -> npz with 4 dims, otherwise float32 with load_dim 5), and LiDAR is required by the released train/test pipelines.",
+   "location": "mmdet3d/datasets/pipelines/loading_UDA.py:90-133",
+   "impact": "Rigs without LiDAR need pipeline edits, even though PD-BEV's losses do not use LiDAR."
+  }
+ ],
+ "port_plan": [
+  {
+   "target": "Different BEVDet-family BEVDepth codebase (same framework; e.g. the Gen2E BEVDepth on BEVDet dev2.0/dev2.1/dev3.0)",
+   "steps": [
+    "Pin the base commit and note its img_inputs API: dev2.0 uses (imgs, rots, trans, intrins, post_rots, post_trans, bda); dev2.1/dev3.0 use (imgs, sensor2egos 4x4, ego2globals, intrins, post_rots, post_trans, bda) (BEVDet@origin/dev3.0 view_transformer.py:141,745).",
+    "Decide (ask) whether PD-BEV-on-BEVDepth includes the repo's BEVDepth_DG test-time changes (virtual depth with f0=450 and the 31-d camera MLP), or puts only PD-BEV's training-only branches on your plain BEVDepth. Recommendation: keep your BEVDepth test graph so it matches the other BEVDepth baselines.",
+    "Port Img_Aux, Img_Aux_Dy and BEV_Aux from mmdet3d/models/necks/img_aux.py. Make the class count, the 6 regression channels per class, the upsample factors and the IFV sigmoid configurable.",
+    "Write a renderer mixin for your view transformer. Real-camera frustum points = your get_lidar_coor output (includes image augmentation and BDA). Virtual cameras = the same frustum with perturbed rotation and the ABSOLUTE perturbed translation. Compute IFV indices from grid_config (lower bound, interval, z-bin = z-range/height_num), gather IFV[b,:,z,y,x], keep only the depth bins actually summed (1..51 or configurable), sum over depth. Vectorise over the batch with flattened-index gather. Ensure the frustum is recomputed when the bev_pool acceleration flag is on.",
+    "Detector: subclass your BEVDepth. In forward_train, after bev_encoder, add L_ps (Img_Aux vs 2D targets), L_render for real and virtual cameras (Img_Aux_Dy on rendered maps vs targets, real depth), and L_bev (Img_Aux_Dy.get_heatmaps on the height-summed IFV vs the task-0 CenterHead target with a correct positive mask). Optionally replace the LiDAR depth loss with box-centre depth BCE (paper L_pg). Do not touch simple_test. Add a script that strips the aux weights for deployment.",
+    "Pipeline: extend your PrepareImageInputs to (i) emit post-augmentation intrinsics if the camera vector needs them, and (ii) sample per-camera virtual extrinsics with ranges from config and emit (R_aug, t_aug). Port Load3DBoxesHeatmap as a rig-agnostic transform: camera list from config, per-camera image size, validity checked after augmentation, target stride = feature stride/2, 7-channel attribute map [du,dv,d_virtual,l,w,h,d_real].",
+    "Data: make the Gen2E infos expose ego-frame boxes (BEVDet-v2 'ann_infos' style), K and sensor2ego for every camera. Drop LiDAR loading if box-centre depth replaces LiDAR depth.",
+    "Config: keep the base schedule identical to your other BEVDepth baselines. Copy PD-BEV's aux settings: aux weights 1, depth weight 3.0, BEV_Aux [80,80,84]/height 4, RenderNet [256,128,7C], perturbation ranges, stride-8 targets for 16x features. Paper batch is 32 (8x4); on 4x4090 either use samples_per_gpu 8 (check memory) or 16 total with an agreed lr.",
+    "Validate: overlay real- and virtual-camera heatmaps on augmented images (adapt the authors' commented debug code at loading_UDA.py:963-985); check that rendering a GT-filled IFV reproduces the target positions; profile memory at N=6 and N=10; run a short training to check loss magnitudes (regression losses are tiny because they are averaged over all pixels).",
+    "Evaluate with the unmodified base test config (load_checkpoint strict=False should report only aux keys as unexpected), and use the same EMA/raw checkpoint choice as the other baselines."
+   ],
+   "effort": "M",
+   "risks": [
+    "The faithful-vs-fixed choice (transposed IFV sampling, bev_loss mask, virtual-camera translation, UDA sign, baseline max-depth) changes results relative to the paper.",
+    "Memory: the IFV gather tensor is B*C*N*D*H*W, about 0.8 GB fp32 per call at B=4, N=6, D=99, 24x44; doubled for virtual cameras and about 1.7x for 10 cameras. Halved by gathering only bins 1..51.",
+    "Adopting BEVDepth_DG's virtual depth and 31-d MLP changes the test-time network and confounds comparisons, especially on R1-f.",
+    "On a dev2.1/dev3.0 API the frustum, perturbation and camera-vector code must be rewritten for 4x4 sensor2ego/ego2global.",
+    "Gen2E rigs with heterogeneous image sizes or new camera names need the rig-agnostic target generator; the released one assumes camera-0 size and 6 names.",
+    "Regression-loss averaging makes attribute losses tiny; re-weighting them changes behaviour relative to the original."
+   ]
+  },
+  {
+   "target": "BEVFormer-small (fundamentalvision/BEVFormer @66b65f3, mmdet3d 0.17.1, query-based backward view transform, no explicit depth)",
+   "steps": [
+    "Tap the inputs PD-BEV needs. (i) BEV map: outs['bev_embed'] from BEVFormerHead.forward (projects/mmdet3d_plugin/bevformer/dense_heads/bevformer_head.py:205-206), shape (bev_h*bev_w, B, 256) = (22500, B, 256) for small (bevformer_small.py:41-43). Reshape to (B,256,150,150) with rows = y (h) and cols = x (w), matching get_reference_points (modules/encoder.py:60-71: xs over W, ys over H, flattened h*W+w); cells are 102.4/150 = 0.683 m. (ii) Image features: one FPN level, 256 channels, stride 32 (bevformer_small.py:52-68), about 23x40 per camera for the 736x1280 padded input. (iii) Camera geometry: img_metas[b]['lidar2img'] (already scaled by RandomScaleImageMultiViewImage, datasets/pipelines/transform_3d.py:302-320) and img_metas[b]['lidar2cam'] (meta_keys at transform_3d.py:246-253; cam_intrinsic is not collected), giving K_scaled = lidar2img @ inv(lidar2cam). (iv) GT: LiDAR-frame gt_bboxes_3d (mmdet3d 0.17.1 LiDARInstance3DBoxes) and gt_labels_3d. No depth distribution is needed for rendering.",
+    "Add a plugin package (projects/mmdet3d_plugin/pdbev/) with BEV_Aux, Img_Aux and Img_Aux_Dy (mmcv 1.4.0 / mmdet 2.14 provide BasicBlock and ConvModule), plus a renderer. For pixel centres (u,v) at render stride s and depth samples d_k: P_lidar = inv(lidar2img_scaled) @ [u*d, v*d, d, 1]. Compute IFV indices from pc_range (150x150 cells, 4 z-bins over [-5,3] in the LiDAR frame), gather, and sum over depth. Choose nearest-index (faithful) or trilinear sampling.",
+    "Detector subclass BEVFormerPDBEV(BEVFormer): override forward_pts_train (detectors/bevformer.py:111-137) so the head runs once, take outs['bev_embed'] for the current frame (history BEVs come from obtain_history_bev without grad, bevformer.py:158-178), and add L_ps, L_render for real and virtual cameras, and L_bev. Leave forward_test/simple_test (bevformer.py:236-290) untouched.",
+    "Add a pipeline transform after RandomScaleImageMultiViewImage/PadMultiViewImage: sample per-camera virtual extrinsics (perturb the camera rotation by yaw/pitch/roll and the camera centre by xyz in the LiDAR frame) and build lidar2img_aug = K_scaled @ lidar2cam_aug. Project GT gravity centres and corners through the box API (convention-safe) for real and virtual views to build heatmaps and attribute maps at the Img_Aux output stride. Pass the matrices and targets as data keys or extended CustomCollect3D meta_keys.",
+    "BEV auxiliary target: BEVFormer has no CenterHead, so draw car Gaussians on the 150x150 grid (or 2x) with mmdet3d.core draw_heatmap_gaussian/gaussian_radius.",
+    "Define the camera vector for Img_Aux_Dy's SE: there is no post_rot or BDA, so e.g. fx, fy, cx, cy plus a flattened lidar2cam 3x4. Resize the BatchNorm/MLP accordingly.",
+    "L_pg (box-centre depth BCE) does not apply because there is no LSS depth distribution. Either drop it (closest to the 'model-agnostic' claim) or add a separate training-only image depth head, which deviates from PD-BEV. Ask the user.",
+    "Config: keep the bevformer_small schedule (AdamW 2e-4, 24 epochs, samples_per_gpu 1, queue_length 3, load_from ckpts/r101_dcn_fcos3d_pretrain.pth; bevformer_small.py:209-260). Aux weights 1. Render at stride 16 with about 52 depth samples to bound memory (about 0.4 GB per render at B=1, N=6).",
+    "Validate as in port (a) (projection overlays, rendered-heatmap alignment), then evaluate with the base BEVFormer test path."
+   ],
+   "effort": "L",
+   "risks": [
+    "No reference implementation: the paper's Table 3 reports BEVFormer + PD-BEV (Nus->Lyft car mAP 0.084->0.208, NDS* 0.246->0.355) but that code is not released, so results may not match.",
+    "Aux gradients flowing into bev_embed and the transformer encoder may destabilise BEVFormer training; loss weights may need tuning.",
+    "Frame and convention differences: LiDAR frame vs BEVDet's ego frame, and mmdet3d 0.17.1 box/yaw conventions. Use the box API (gravity_center, corners, dims) to avoid convention bugs.",
+    "The BEVFormer base itself hard-codes 6 cameras (cams_embeds with num_cams=6 at modules/transformer.py:40,74-75,170-171; SpatialCrossAttention num_cams=6 at modules/spatial_cross_attention.py:47,66,145-164). R1-c10 evaluation needs a base-level decision that applies to every BEVFormer baseline.",
+    "Older software stack (torch 1.9.1, mmcv 1.4.0): keep the plugin free of newer APIs.",
+    "Temporal queue: auxiliary rendering applies to the current frame's BEV only; history BEVs are no-grad."
+   ]
+  }
+ ],
+ "open_questions": [
+  "Faithful reproduction or bug-fixed port? Behaviour-changing issues: (i) transposed IFV sampling (view_transformer_pc.py:387), (ii) bev_loss positive mask eq(0) (centerpoint_head.py:659), (iii) virtual-camera rendering vs target translation mismatch (loading_UDA.py:549-550 vs 538-543), (iv) UDA consistency sign (pcbev.py:253-257), (v) LiDAR depth effectively disabled in the BEVDepth_DG baseline (view_transformer_pc.py:635). Suggestion: fix (i)-(iii), document them, and optionally run one faithful configuration for reference.",
+  "For 'PD-BEV on BEVDepth', include the repo's DG-BEV-style virtual depth and 31-d camera MLP (a test-time change to BEVDepth that the authors treat as their baseline), or apply PD-BEV's training-only branches to your plain BEVDepth? This affects parity with UniDrive/UDGA/CoIn3D and would confound R1-f (focal) results.",
+  "Depth supervision: replace your BEVDepth's LiDAR depth loss with PD-BEV's box-centre depth (paper L_pg, Table 5), or keep LiDAR depth? Does the R1 training data have LiDAR?",
+  "Gen2E is a DG protocol (train on R1, test on variants and R2-R9). Skip PCBEV_UDA entirely, or also report UDA? UDA needs unlabeled target data, and as released it also uses target GT for sample filtering.",
+  "Virtual-camera perturbation ranges: keep PD-BEV's defaults (yaw +-0.4 rad, pitch/roll +-0.04 rad, xyz +-2 m), or match them to the R1-r/R1-t variants? Tuning them to the evaluation variants could count as test-set leakage.",
+  "Which BEVDet commit/API is the Gen2E BEVDepth base on (dev2.0 rots/trans vs dev2.1/dev3.0 4x4 sensor2ego)? Will all four BEVDepth baselines share one base commit?",
+  "BEVFormer-small: is a re-implementation acceptable, given the paper's BEVFormer variant (Table 3) has no released code? Drop L_pg (no depth distribution) or add a training-only image depth head? Render at stride 16 or 32, with how many depth samples?",
+  "Class set and evaluation: use Gen2E's own classes and metric for all baselines? The PD-BEV paper reports car-only NDS* on target domains, and its Lyft test config keeps only the car head.",
+  "Schedule on 4x4090: keep total batch 32 (samples_per_gpu 8, memory risk) or use 16 with lr scaling? 23 epochs (PD-BEV config) or 24 (baseline)? Evaluate the EMA checkpoint or the raw one?",
+  "GitHub release: PD-BEV's code has no license. Contact the authors (hlu585@connect.hkust-gz.edu.cn) for a license, or do a clean-room re-implementation from the paper (keeping Apache-2.0 notices for BEVDet/mmdet3d-derived parts)?",
+  "IFV: follow the paper (sigmoid on the height logits) or the code (no sigmoid)?",
+  "For R1-c10 on BEVFormer: the base model hard-codes 6 learned camera embeddings and num_cams=6. How should every BEVFormer baseline handle 10 cameras (e.g. disable cams_embeds, map embeddings by position)?"
+ ],
+ "bugs_or_gaps": [
+  "README.md:17 'pip install -v -e .' cannot work: the repo has no setup.py or setup.cfg, at HEAD or in history. The bev_pool_v2 CUDA extension can only be built with upstream BEVDet@2ae6a02 setup.py:229-231.",
+  "README.md:29: the pre-processed pkl download link is empty ('[here]' with no URL).",
+  "README.md:44 uses the placeholder 'c' instead of a GPU count. README.md:48 references ./configs/PDBEV/pcbev-uda-NUS2LYFT.py, which does not exist (the file is pdbev-uda-NUS2LYFT.py; 'pcbev' names exist only in mmdet3d/.mim/configs/111111_PCBEV/).",
+  "README.md:59 tests ./work_dirs/pdbev-r50-cbgs-NUS2X-dg/epoch_24.pth, but the DG config trains 23 epochs (pdbev-r50-cbgs-NUS2X-dg.py:286), so only epoch_23.pth / epoch_23_ema.pth exist. The authors' own mmdet3d/.mim/tools/test.sh uses epoch_23, and epoch_3 for DA even though the DA config trains 4 epochs.",
+  "tools/test.py:245 unconditionally dumps to /mnt/cfs/algorithm/hao.lu/..., so every test run on another machine crashes. Further hard-coded dumps: lyft_dataset_DA.py:163, UDA_DA_LYFT_dataset.py:574-575, DeepAccident_dataset.py:636, lyft_eval.py:532-535, lyft_dataset.py:329,953.",
+  "tools/train.py:120 leaves torch.autograd.set_detect_anomaly(True) enabled, which slows training heavily.",
+  "NuScenesDataset.evaluate now requires a positional save_path (nuscenes_dataset.py:559-562), but the mmcv EvalHook calls evaluate(results, logger=..., **eval_kwargs). This raises TypeError whenever evaluation triggers, e.g. at epoch 24 of bevdepth-r50-cbgs-pc-nus.py (base interval 24, configs/_base_/datasets/nus-3d.py:142). Training checkpoints are still saved first.",
+  "PCBEV_DG/PCBEV_UDA.simple_test are broken: extract_feat calls extract_img_feat(img, img_metas, **kwargs) against the signature (points, img, img_metas, gt_bboxes_3d, gt_labels_3d), unpacks 4 of 6 outputs, and needs train-only bev_aug (pcbev.py:62-69,110-124,211-215). Training configs cannot be used for testing; use the bevdet_our configs.",
+  "[method, likely bug] Transposed IFV sampling: get_feature_Voxel2Frutums indexes bev[b,:,Z,X,Y] (view_transformer_pc.py:387), but BEVDet BEV tensors are laid out [B,C,(Z),Y,X] (view_transformer.py:184-191 '(B, Z, Y, X, C)'; CenterHead draws heatmap[y,x]). Rendered PV features therefore read the cell mirrored about x=y. It runs only because the grid is square.",
+  "[method, likely bug] CenterHead.bev_loss uses pos_weights = gts.eq(0) (centerpoint_head.py:659): every background pixel is treated as positive while object centres get no positive weight. The target is bicubic-upsampled, so peaks are rarely exactly 1 anyway. The loss is returned unreduced and car-only.",
+  "[method, verified] UDA consistency loss sign: neg_person returns 1 - focal_loss when loss_flag != 'sim' (pcbev.py:253-257), and all UDA configs set loss_flag='Focal' (pdbev-uda-NUS2LYFT.py:18). Minimising the total loss therefore maximises the focal term, contrary to paper Eq.7.",
+  "[method, verified] Virtual-camera translation mismatch: rendering and the camera MLP use tran_aug = sensor2sensor_aug[:3,3], a relative offset of about -R_aug^T*delta (loading_UDA.py:549-550; used in pcbev.py:76-79,92). The virtual-view targets use the absolute perturbed translation t+delta (loading_UDA.py:538-543 consumed at 1024-1028). Rendered views are thus placed roughly a camera-mount offset (about 1.5 m in height for nuScenes) away from the views their targets were drawn for.",
+  "[baseline, verified] LSSViewTransformerBEVDepth_DG.get_downsampled_gt_depth replaces empty pixels with 1e5 and then takes torch.max (view_transformer_pc.py:632-635); upstream uses torch.min (BEVDet@2ae6a02 view_transformer.py:629). Any 16x16 patch containing an empty pixel is discarded, so the -pc- BEVDepth baseline gets essentially no LiDAR depth supervision. Whether this affected the paper's baseline numbers is unknown.",
+  "[method] Img_Aux_Dy.pseudo (target RenderNet path) skips the camera-aware SE that forward applies (img_aux.py:702-721 vs 741-751), so source and target rendering heads differ.",
+  "[UDA] The target self-training losses from img_aux.pseudo and bev_img_aux.pseudo are computed but never added (pcbev.py:316,323,328-330), and the BEV pseudo-label branch is commented out (383-386). Target supervision is only the class-0 consistency loss.",
+  "[UDA] UDA_DA_Lyft ignores the sampler index and draws random.randint (UDA_DA_LYFT_dataset.py:746-760). It alternates domains through worker-local state (809-811) and filters target frames by target GT (814-817), i.e. labels are used in an 'unsupervised' setting. Test mode is also random with len 5000 (720-729), so it is unusable for evaluation. With mmdet's fixed per-worker seeds re-applied every epoch (mmdet/datasets/builder.py:209-215), each epoch replays the same samples and augmentations (inferred).",
+  "[UDA] UDA_DA_Nus is defined but never imported in datasets/__init__.py (only UDA_DA_Lyft, :36). The DA2NUS and LYFT2NUS configs use UDA_DA_Lyft with a Lyft val ann_file for a nuScenes target (e.g. pdbev-uda-DA2NUS.py:188-189,266-268).",
+  "[UDA] The required CBGS index pkls (data/lyft/lyft_train_cbgs.pkl, data/nuscenes/nus_train_cbgs.pkl, data/DeepAccident_data/da_train_cbgs.pkl; UDA_DA_LYFT_dataset.py:122-129) are not shipped, and no released script writes them (only a commented mmcv.dump at dataset_wrappers.py:30).",
+  "tools/Lyft_converter.py:97 returns the undefined name 'z' (NameError). It writes lyft_infos_ann_*.pkl (:125-126,154) with nuScenes-10-class labels (:45-48,94-96), while the configs read lyft_infos_ori_ann_*.pkl whose labels are decoded with the Lyft-9 Target_CLASSES (lyft_dataset_DA.py:346-348). The matching script exists only at mmdet3d/.mim/tools/add_anno_bevdet_lyft1.py:27-30,108,137. Both need mmdet3d's lyft_infos_{train,val,test}.pkl, whose generator (tools/create_data.py) is not in the repo.",
+  "tools/Deepaccident_converter.py:161-167 uses hard-coded /mnt input/output paths. It flips box y (and adds 1.9 m to z) but not yaw or vy (:113-117); convention not verified without the data. It writes no cam_intrinsic, so the pipeline falls back to hard-coded K.",
+  "Load3DBoxesHeatmap checks validity against camera 0's image size and pre-augmentation bounds (loading_UDA.py:868-876,898). Virtual-view targets use a different radius/mask policy than real views (radius 4-25 vs 1-5 cells; 1067-1072 vs 933-940).",
+  "Test-time crop is random (loading_UDA.py:260) and follows a different policy than the training crop (245-246).",
+  "Paper vs code mismatches: IFV without sigmoid (img_aux.py:869-871 vs paper Eq.3); L_con uses hard positive (h>thr) and negative ((1-h)^4>0.5) masks (pcbev.py:221-241) instead of Eq.7's soft target; yaw range is 0.2 in the paper text vs 0.4 in the config (the paper's Fig.9 supports 0.4); depth loss weight 3.0 is not mentioned in the paper.",
+  "Cross-dataset evaluation: the NDS printed by the code (nuScenes DetectionMetrics) is not the paper's NDS*. tp_errors averages over the 10 nuScenes class names with 0 for missing classes, and mAVE/mAAE count as 0 (nuscenes-devkit 1.1.10 data_classes.py:201-242). The paper's NDS* = (3*mAP + sum over ATE/ASE/AOE of (1-min(1,err)))/6 for car only, which reproduces Table 1's oracle rows. The Lyft test config keeps only the car task (bevdepth-r50-cbgs-pc-lyft.py:92); the DA test config's task heads are size-mismatched with NUS checkpoints, so some heads stay randomly initialised.",
+  "Repository hygiene: committed binaries (mmdet3d/ops/bev_pool_v2/bev_pool_v2_ext.cpython-38-x86_64-linux-gnu.so built with GCC 5.4 for sm_86 against libcudart 11.x and a specific torch ABI; build/*.o), about 400 __pycache__/*.pyc files, a 1-byte junk 'Fig' file, and mmdet3d/.mim copies of configs and tools including unreleased experiments. The ImageNet weight path /mnt/cfs/algorithm/yunpeng.zhang/pretrained/resnet50-0676ba61.pth is hard-coded in every config.",
+  "Regression losses in Img_Aux/Img_Aux_Dy return per-pixel maps averaged over all pixels (img_aux.py:316-352, 640-676), so the effective attribute-loss weight is tiny (positives are a few percent of pixels). Not a crash, but it matters if losses are re-weighted.",
+  "No LICENSE file now or in history, and Apache-2.0 notices from BEVDet/mmdet3d were removed (see license)."
+ ],
+ "config_facts": [
+  {
+   "key": "NUS2X-dg model.type",
+   "value": "PCBEV_DG",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:59"
+  },
+  {
+   "key": "NUS2X-dg img_backbone",
+   "value": "ResNet-50, out_indices (2,3), with_cp=True, trainable BN, pretrained=/mnt/cfs/algorithm/yunpeng.zhang/pretrained/resnet50-0676ba61.pth (torchvision ImageNet)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:60-70"
+  },
+  {
+   "key": "NUS2X-dg img_neck",
+   "value": "CustomFPN in [1024,2048] -> 512, out_ids [0] (stride 16, 24x44 for 384x704)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:84-90"
+  },
+  {
+   "key": "NUS2X-dg img_aug (2D detector, L_ps)",
+   "value": "Img_Aux numC_input 512, num_layer [2,2,2] (default), upsample [1,2,1], num_channels [256,128,10+60]",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:71-76"
+  },
+  {
+   "key": "NUS2X-dg bev_img_aux (RenderNet, L_render)",
+   "value": "Img_Aux_Dy numC_input 80, num_layer [2,1,1], upsample [2,1,1], num_channels [256,128,70]",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:77-83"
+  },
+  {
+   "key": "NUS2X-dg img_view_transformer",
+   "value": "LSSViewTransformer_pc, in 512, out 80, downsample 16, depthnet use_dcn False, downsample_from_ann 2, loss_depth_weight 3.0 (default)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:91-107; mmdet3d/models/necks/view_transformer_pc.py:245"
+  },
+  {
+   "key": "NUS2X-dg BEV_Aux (BEV decoder / IFV)",
+   "value": "numC_input 256, num_layer [2,2,2], height_num 4, num_channels [80,80,84] (80 feature + 4 height)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:93-99"
+  },
+  {
+   "key": "grid_config",
+   "value": "x,y [-51.2,51.2,0.8] (128x128); z [-5,3,8] (1 bin); depth [1.0,100.0,1.0] (99 virtual-depth bins)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:47-52"
+  },
+  {
+   "key": "point_cloud_range / voxel / head grid",
+   "value": "[-51.2,-51.2,-5,51.2,51.2,3]; voxel_size [0.1,0.1,0.2]; grid_size [1024,1024,40]; out_size_factor 8; post_center_range +-61.2",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:7,54,131-155"
+  },
+  {
+   "key": "input_size / src_size",
+   "value": "(384, 704); src_size (900,1600) is unused by PrepareImageInputs_UDA",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:25-26"
+  },
+  {
+   "key": "image augmentation",
+   "value": "resize (-0.06,0.11), rot (-5.4,5.4) deg, flip True, crop_h (0.0,0.1), resize_test 0.0",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:28-33"
+  },
+  {
+   "key": "virtual-camera (MVSR) perturbation",
+   "value": "pitch +-0.04, yaw +-0.4, roll +-0.04 rad; extrinsic x/y/z +-2.0 m (rendering/targets only; input images not warped)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:34-39; mmdet3d/datasets/pipelines/loading_UDA.py:361-406"
+  },
+  {
+   "key": "BDA",
+   "value": "rot_lim +-22.5 deg, scale 0.95-1.05, flip_dx/flip_dy 0.5",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:184-188"
+  },
+  {
+   "key": "pts_bbox_head",
+   "value": "CenterHead 6 tasks (nuScenes 10 classes), GaussianFocalLoss + L1 (0.25), code_weights velocity 0.2, test: scale-NMS per task",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:116-176"
+  },
+  {
+   "key": "train pipeline additions (DG)",
+   "value": "PrepareImageInputs_UDA -> LoadAnnotationsBEVDepth -> LoadPointsFromFile_UDA(use_dim 3) -> PointToMultiViewDepth_UDA -> Load3DBoxesHeatmap(downsample_feature 8) -> filters -> Collect3D(+gt_depth, gt_depth_real, heatmaps_2d, ann_maps_2d, heatmap_masks_2d, *_aug, bev_aug)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:190-214"
+  },
+  {
+   "key": "dataset (DG nus)",
+   "value": "CBGSDataset(NuScenesDataset, img_info_prototype 'bevdet', use_valid_flag True), ann files data/nuscenes/bevdetv2-nuscenes_infos_{train,val}.pkl",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:179-275"
+  },
+  {
+   "key": "batch",
+   "value": "samples_per_gpu 4, workers_per_gpu 4 (paper: 8 GPUs, total 32)",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:255-257; arXiv 2310.11346v3 App. B.3"
+  },
+  {
+   "key": "optimizer",
+   "value": "AdamW lr 2e-4, weight_decay 1e-2, grad_clip max_norm 5",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:278-279"
+  },
+  {
+   "key": "lr schedule / epochs (DG)",
+   "value": "step policy, linear warmup 20 iters (ratio 0.001), step [24] never reached (constant LR), max_epochs 23",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:280-286"
+  },
+  {
+   "key": "EMA",
+   "value": "MEGVIIEMAHook init_updates 10560, decay 0.999 ramp; also saves epoch_N_ema.pth",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-NUS2X-dg.py:288-294; mmdet3d/core/hook/ema.py:70-116"
+  },
+  {
+   "key": "load_from / evaluation",
+   "value": "no load_from (ImageNet init only); base evaluation interval 24 never triggers in 23 epochs",
+   "source": "configs/_base_/datasets/nus-3d.py:142"
+  },
+  {
+   "key": "aux loss weights",
+   "value": "all PD-BEV aux losses weight 1 (hard-coded task_loss_weight lists); depth BCE x3.0; BEV aux unweighted and unreduced",
+   "source": "mmdet3d/models/necks/img_aux.py:241,594,849; mmdet3d/models/necks/view_transformer_pc.py:245,448; mmdet3d/models/dense_heads/centerpoint_head.py:651-664"
+  },
+  {
+   "key": "virtual depth constant",
+   "value": "U = canonical focal 450 px: d_virtual = d * 450 * sqrt(1/fx^2+1/fy^2)/sqrt(2) using post-augmentation intrinsics",
+   "source": "mmdet3d/models/necks/view_transformer_pc.py:257,268-273; mmdet3d/datasets/pipelines/loading_UDA.py:684-693,819,909-910"
+  },
+  {
+   "key": "DepthNet / RenderNet camera vector",
+   "value": "31-d = [fx,fy,cx,cy] + [fx',fy',cx',cy'] (post-aug) + 6 post_rot/post_tran + 5 bda + 12 sensor2ego (upstream BEVDepth: 27-d)",
+   "source": "mmdet3d/models/necks/view_transformer_pc.py:394-422; mmdet3d/models/necks/img_aux.py:527-529"
+  },
+  {
+   "key": "rendering",
+   "value": "IFV 4 height bins of 2 m over z [-5,3]; rays sum virtual-depth bins 1..51 (2-52) on the 24x44 stride-16 frustum; nearest-index gather with 0.8 m cells",
+   "source": "mmdet3d/models/necks/view_transformer_pc.py:253,358-391"
+  },
+  {
+   "key": "2D targets",
+   "value": "stride 8 (48x88); per class 7-ch ann map [du,dv,d_virtual,l,w,h,d_real]; radius clipped to [1,5] cells (real) / [4,25] (virtual); 3x3 (real) / 2x3 (virtual) masks",
+   "source": "mmdet3d/datasets/pipelines/loading_UDA.py:811-819,930-952,1064-1086"
+  },
+  {
+   "key": "UDA NUS2LYFT model",
+   "value": "PCBEV_UDA, loss_flag 'Focal', thr 0.9 (thr_low 0.5, alpha 2, gamma 4 hard-coded), same modules as DG",
+   "source": "configs/PDBEV/pdbev-uda-NUS2LYFT.py:18-19,69-127; mmdet3d/models/detectors/pcbev.py:161-166"
+  },
+  {
+   "key": "UDA classes",
+   "value": "Source = nuScenes 10, Target = Lyft 9 [car,truck,bus,emergency_vehicle,other_vehicle,motorcycle,bicycle,pedestrian,animal], Test [car,truck,bicycle,pedestrian]",
+   "source": "configs/PDBEV/pdbev-uda-NUS2LYFT.py:22-26"
+  },
+  {
+   "key": "UDA data_config",
+   "value": "Lyft-style camera names (ignored by the pipeline), rot (-25.4,25.4), other augmentation as DG",
+   "source": "configs/PDBEV/pdbev-uda-NUS2LYFT.py:28-55"
+  },
+  {
+   "key": "UDA data",
+   "value": "UDA_DA_Lyft; ann_file_source ./data/nuscenes/bevdetv2-nuscenes_infos_train.pkl; ann_file_target ./data/lyft/lyft_infos_ori_ann_train.pkl; val/test ann_file lyft_infos_ori_ann_val.pkl; source CBGS index ./data/nuscenes/nus_train_cbgs.pkl (hard-coded); Collect3D adds Target_Domain",
+   "source": "configs/PDBEV/pdbev-uda-NUS2LYFT.py:190-290; mmdet3d/datasets/UDA_DA_LYFT_dataset.py:122-131"
+  },
+  {
+   "key": "UDA schedule / init",
+   "value": "AdamW 2e-4, warmup 200, step [12] never reached, max_epochs 3; epoch = 5000 samples (small_epoch), about 156 iters/epoch on 8x4; init via tools/train.py --checkpoint (README: NUS2X-dg epoch_23.pth)",
+   "source": "configs/PDBEV/pdbev-uda-NUS2LYFT.py:293-301; mmdet3d/datasets/UDA_DA_LYFT_dataset.py:133,720-729; README.md:48; tools/train.py:226-228"
+  },
+  {
+   "key": "baseline bevdepth-r50-cbgs-pc-nus model",
+   "value": "BEVDepth_DG + LSSViewTransformerBEVDepth_DG (no img_aug/bev_img_aux/BEV_Aux)",
+   "source": "configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:52,72-79"
+  },
+  {
+   "key": "baseline vs PD-BEV DG differences",
+   "value": "extrinsic perturbation 0.01 (unused by BEVDepth_DG) vs 0.04/0.4/0.04; LiDAR use_dim 5; no Load3DBoxesHeatmap; Collect gt_depth only; samples_per_gpu 8 vs 4; warmup 200 vs 20; 24 vs 23 epochs; test pipeline loads LiDAR points",
+   "source": "configs/bevdet_our/bevdepth-r50-cbgs-pc-nus.py:31-33,161-210,231,258,261"
+  },
+  {
+   "key": "pc-lyft test config",
+   "value": "Lyft 9 classes but CenterHead single task ['car']; LyftDataset_DA on lyft_infos_ori_ann_val.pkl; resize (-0.06,0.30)",
+   "source": "configs/bevdet_our/bevdepth-r50-cbgs-pc-lyft.py:10-11,25,92,146-148,224"
+  },
+  {
+   "key": "LYFT2X-dg",
+   "value": "Lyft 9 classes, CenterHead car-only, yaw_weight [1,0,...], resize (-0.04,0.3), LyftDataset_DA, 23 epochs",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-LYFT2X-dg.py"
+  },
+  {
+   "key": "DA2X-dg",
+   "value": "DeepAccident 6 classes [car,truck,van,motorcycle,cyclist,pedestrian], CenterHead 5 tasks (includes 'bus', not in the class list), DeepAccidentDataset bevdetv4-DeepAccident_infos_{train,val}.pkl, 4 epochs",
+   "source": "configs/PDBEV/pdbev-r50-cbgs-DA2X-dg.py"
+  },
+  {
+   "key": "meaning of 'pc'",
+   "value": "PCBEV = internal name of PD-BEV; '-pc-' configs = BEVDepth built on view_transformer_pc.py (BEVDepth_DG), used to train the baseline and to test PCBEV checkpoints. Not 'point cloud'. The expansion of PC is not given in the code (inferred: perspective-consistency).",
+   "source": "mmdet3d/.mim/configs/111111_PCBEV/; mmdet3d/.mim/tools/{dg.sh,test.sh,uda.sh}; mmdet3d/models/detectors/pcbev.py:18,156"
+  },
+  {
+   "key": "paper hyper-parameters",
+   "value": "AdamW 2e-4 with grad clip, total batch 32 on 8x RTX 3090, 704x384 input, flip/scale/rot +-5.4 deg, scale [-0.04,0.11] nus/DA and [-0.04,0.30] Lyft; perturbation pitch 0.04, yaw 0.2 (text; Fig.9 best at 0.4), roll 0.04, IFV height 4; RenderNet [256,256,128,7*Ncls]; BEV decoder 6 conv layers, 80 ch, last 84",
+   "source": "arXiv 2310.11346v3 Sec.4, App. B.3-B.4, C.1"
+  },
+  {
+   "key": "paper evaluation",
+   "value": "Target-domain results car-only; NDS* = (3*mAP + sum over ATE/ASE/AOE of (1-min(1,err)))/6 within [-50,50] m (reproduces Table 1 oracle rows); source nuScenes uses standard NDS",
+   "source": "arXiv 2310.11346v3 Table 1 caption, App. B.2 Eq.18"
+  },
+  {
+   "key": "software versions",
+   "value": "mmdet3d 1.0.0rc4; asserts mmcv-full 1.5.2-1.7.0, mmdet 2.24.0-3.0.0, mmseg 0.20.0-1.0.0; requirements/ identical to BEVDet 2ae6a02 (numba==0.53.0)",
+   "source": "mmdet3d/version.py:3; mmdet3d/__init__.py:21-47; requirements/mminstall.txt"
+  }
+ ],
+ "environment": "PD-BEV pins mmdet3d 1.0.0rc4 (mmdet3d/version.py:3) and asserts mmcv-full 1.5.2-1.7.0, mmdet 2.24.0-3.0.0 and mmseg 0.20.0-1.0.0 (mmdet3d/__init__.py:21-47). requirements/ is byte-identical to upstream BEVDet 2ae6a02 (numba==0.53.0, nuscenes-devkit, lyft_dataset_sdk; optional spconv). It targets Python 3.8 (committed cpython-38 .pyc and .so files).\n\nThe committed bev_pool_v2 extension (mmdet3d/ops/bev_pool_v2/bev_pool_v2_ext.cpython-38-x86_64-linux-gnu.so, identical copy under build/) was built with GCC 5.4 for sm_86 against libcudart.so.11.0 and a torch build that has libtorch_cuda_cu/cpp. It is ABI-specific and should be rebuilt. PD-BEV has no setup.py, so reuse BEVDet@2ae6a02 setup.py (bev_pool_v2_ext at lines 229-231), or install upstream BEVDet dev2.0 and overlay the PD-BEV files.\n\nCandidate local env (versions printed, nothing run): `tcar_bevdet` has python 3.8.20, torch 1.10.0+cu113, torchvision 0.11.0, mmcv-full 1.5.3, mmdet 2.25.1, mmseg 0.25.0, numba 0.53.0, numpy 1.20.3, spconv 2.1.21, nuscenes-devkit 1.1.10, lyft-dataset-sdk 0.0.8, scipy 1.10.1 and pyquaternion 0.9.9. It has no mmdet3d installed. It satisfies all of PD-BEV's version asserts.\n\nBEVFormer env `bevformer`: python 3.8.20, torch 1.9.1+cu111, torchvision 0.10.1, mmcv-full 1.4.0, mmdet 2.14.0, mmseg 0.14.1, mmdet3d 0.17.1 (egg), nuscenes-devkit 1.0.9, timm 0.6.13. `open-mmlab` has the same stack with mmdet3d 0.17.1 from /home/jeongtae/mmdetection3d.\n\nOn the RTX 4090 (sm_89) with the CUDA 11.1/11.3 toolkits, build extensions with TORCH_CUDA_ARCH_LIST=8.6; sm_86 SASS should run on sm_89 (inferred, not tested). The paper trained on 8x RTX 3090 with total batch 32. On 4x4090 that means samples_per_gpu 8 or lr/batch scaling.",
+ "license": "The repo has no LICENSE file at c2995d1 and never had one: `git log --all -- LICENSE setup.py` returns nothing, and the README states no license. Upstream BEVDet is Apache-2.0 (BEVDet@2ae6a02:LICENSE, 'Copyright 2018-2019 Open-MMLab'), and so is mmdet3d. PD-BEV redistributes that code but dropped the LICENSE/notice. The arXiv paper 2310.11346 is CC BY 4.0, which covers the paper only, not the code.\n\nPractical status:\n- PD-BEV-specific code (pcbev.py, img_aux.py, view_transformer_pc.py, loading_UDA.py, the UDA datasets, the converters) has no explicit license, so by default all rights are reserved.\n- Files derived from BEVDet or mmdet3d remain Apache-2.0, and their notices must be kept.\n- Before putting a port on GitHub, either ask the authors (hlu585@connect.hkust-gz.edu.cn) for an explicit license, or re-implement from the paper. In both cases keep Apache-2.0 attribution for BEVDet/mmdet3d-derived code.",
+ "sources": [
+  "/home/jeongtae/Gen2E/PD-BEV (git c2995d1, clone of https://github.com/EnVision-Research/Generalizable-BEV)",
+  "https://github.com/HuangJunJie2017/BEVDet: blobless clone with all branches at /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev/BEVDet (dev2.0 2ae6a02, dev2.1 f71858d, dev3.0 26144be, master 4d85acf, checkpoint da4e4de, main 26989d4)",
+  "Upstream files extracted for diffing: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev/up2ae6a02/",
+  "Base-matching script: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev_scripts/match_base.py",
+  "https://github.com/fundamentalvision/BEVFormer: blobless clone @66b65f3 at /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/wf/pdbev/BEVFormer",
+  "https://arxiv.org/abs/2310.11346 (v3, 25 Dec 2023, CC BY 4.0). WebFetch cached the PDF automatically at /home/jeongtae/.claude/projects/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/tool-results/webfetch-1795270295656-m1w3jj.pdf (harness tool-results cache; I did not write it deliberately)",
+  "Installed packages read for semantics: tcar_bevdet env nuscenes-devkit 1.1.10 (nuscenes/eval/detection/data_classes.py:201-242), mmcv 1.5.3 (mmcv/runner/hooks/evaluation.py:356-364), mmdet 2.25.1 (mmdet/datasets/builder.py:184-215)",
+  "Authors' unreleased scripts committed under /home/jeongtae/Gen2E/PD-BEV/mmdet3d/.mim/tools (dg*.sh, test.sh, uda.sh, add_anno_bevdet_lyft1.py, create_data_bevdet_lyft.py)"
+ ],
+ "upstream_base": "HuangJunJie2017/BEVDet, branch dev2.0, HEAD commit 2ae6a02 (2023-03-13, 'a.fix #136. b.set default temporal start epoch in training process from 3 to 2. c.remove original create_data.py'). The same commit is in the history of dev2.1 and dev3.0.\n\nEvidence: I compared git blob hashes of PD-BEV's 258 tracked mmdet3d files (excluding __pycache__ and .mim) against every commit on every upstream branch.\n- 2ae6a02: 223 identical, 16 modified, 19 PD-BEV-only, and all 239 upstream mmdet3d files present.\n- Next best (e57a515/c0d20ff and other dev2.0/dev2.1 commits up to 2023-04-27): 222 identical. The only difference is ops/bev_pool_v2/bev_pool.py.\n- dev2.1 HEAD f71858d: 218 identical, 6 upstream files missing in PD-BEV.\n- dev3.0 HEAD 26144be: 211 identical, 15 missing.\n- master/checkpoint: about 15 identical (old API).\n- requirements/ is byte-identical to 2ae6a02. None of the PD-BEV-added files exist on any upstream branch.\n\nModified relative to 2ae6a02 (20 files):\n- mmdet3d/apis/train.py\n- mmdet3d/core/evaluation/lyft_eval.py\n- mmdet3d/datasets/{__init__.py, custom_3d.py, dataset_wrappers.py, lyft_dataset.py, nuscenes_dataset.py}\n- mmdet3d/datasets/pipelines/{__init__.py, loading.py}\n- mmdet3d/models/backbones/__init__.py\n- mmdet3d/models/dense_heads/centerpoint_head.py\n- mmdet3d/models/detectors/{__init__.py, bevdet.py}\n- mmdet3d/models/necks/{__init__.py, view_transformer.py}\n- mmdet3d/version.py\n- tools/{train.py, test.py, dist_train.sh, dist_test.sh}\n\nAdded (34 files):\n- configs/PDBEV/*.py (7) and configs/bevdet_our/*.py (3)\n- mmdet3d/models/detectors/{pcbev.py, bevdepth.py, bevdet_intri.py}\n- mmdet3d/models/necks/{view_transformer_pc.py, img_aux.py}\n- mmdet3d/models/backbones/context_cluster{,2,3}.py\n- mmdet3d/datasets/{UDA_DA_LYFT_dataset.py, UDA_DA_Nus_dataset.py, lyft_dataset_DA.py, lyft_dataset_pkl.py, DeepAccident_dataset.py, CARLA_dataset.py, shift_dataset.py, nuscenes_dataset_DA.py}\n- mmdet3d/datasets/pipelines/{loading_UDA.py, loading_plug.py}\n- mmdet3d/ops/bev_pool_v2/bev_pool_v2_ext.cpython-38-x86_64-linux-gnu.so\n- tools/{Lyft_converter.py, Deepaccident_converter.py, launch_dist_job.py, dist_train_mpi.sh, run_dist.sh}\n\nAlso committed: build/ artifacts, about 400 .pyc files, and mmdet3d/.mim/{configs,tools}. Removed vs upstream: setup.py, setup.cfg, LICENSE, MANIFEST.in, requirements.txt, docs/, docker/, demo/, data/, all configs except _base_, tools/create_data_bevdet.py and tools/convert_bevdet_to_TRT.py (copies survive only in .mim)."
+}

@@ -1,0 +1,80 @@
+# 공식 코드 버그 기록 (PD-BEV, UDGA)
+
+2026-11-22 결정에 따라 PD-BEV와 UDGA 공식 코드의 버그는 **논문 의도대로 고쳐요**([decisions.md](decisions.md)). 이 문서에는 버그마다 세 가지를 남겨요.
+1. 어떻게 찾았는지
+2. 무엇을 정확히 바꿨는지(전/후)
+3. 고친 뒤 어떻게 확인했는지
+
+"수정"과 "커밋" 칸은 고칠 때마다 채워요.
+
+## 어떻게 찾았나
+
+| 단계 | 날짜 | 방법 | 원자료 |
+|---|---|---|---|
+| 1. 코드 분석 | 2026-11-21 | 코드베이스마다 분석 에이전트가 코드를 읽고, 문제를 `파일:줄`과 함께 보고했어요(`bugs_or_gaps`). 대상은 PD-BEV, UDGA, BEVFormer, BEVDepth base, UniDrive/CoIn3D예요. | [analysis/2026-11-21/](analysis/2026-11-21/) `analysis_*.json` |
+| 2. 교차 검증 | 2026-11-21 | 다른 에이전트가 보고된 위치를 독립적으로 다시 읽고 판정했어요(confirmed / partly_wrong / wrong / unverifiable). 분석이 놓친 문제도 추가했어요(`missed`). 일부는 실행으로 확인했어요. 예: UDGA 재투영 버그를 순수 Python 인덱스 재현으로 돌리니 D=3, h=2, w=4에서 24개 중 18개가 불일치했어요. | `verify_pdbev.json`, `verify_udga.json`, `verify_v1.json` |
+| 3. 재확인 | 2026-11-22 | 고치기 전에 제가 해당 줄을 다시 읽었어요(아래 "재확인" 칸). 고칠 때는 재현 테스트를 먼저 써서 실패를 기록하고, 고친 뒤 같은 테스트가 통과하는지 확인해요. | 이 문서, `tools/bugrepro/` (고칠 때 추가) |
+
+표의 "발견" 칸에 적힌 ID는 원자료 번호예요.
+- 분석 결과: `analysis_*.json`의 `bugs_or_gaps[i]`는 PD-BEV `B<i>`, UDGA `U<i>`로 적었어요.
+- 검증 판정: `verify_*.json`의 `checks[i]`는 PD-BEV `C<i>`, UDGA `V<i>`예요.
+- 검증에서 추가로 찾은 것: `missed[i]`는 PD-BEV `M<i>`, UDGA `W<i>`예요.
+
+## PD-BEV: 수정 대상 (DG 학습·평가 경로)
+
+위치는 `bevdepth/mmdet3d/` 기준이에요(PD-BEV @c2995d1).
+
+| ID | 위치 | 문제 | 발견 | 재확인 (2026-11-22) | 영향 | 수정 | 커밋 |
+|---|---|---|---|---|---|---|---|
+| PDBEV-1 | `models/necks/view_transformer_pc.py:387` | IFV에서 렌더링할 때 `bev[b, :, Z, X, Y]`로 읽어요. BEV 텐서는 `[B, C, Z, Y, X]`라서 x와 y가 뒤바뀌어요. | B08 → C05 confirmed | 코드에서 확인 | 렌더링된 PV feature가 x=y에 대칭인 셀을 읽어요. | | |
+| PDBEV-2 | `models/dense_heads/centerpoint_head.py:659` | `bev_loss`가 `pos_weights = gts.eq(0)`이에요. 배경 픽셀을 positive로 써요. head task 0이 1개 클래스일 때만 동작해요(`:656` `squeeze(1)`). | B09 → C06 confirmed, M01 | 코드에서 확인 | car BEV 보조 손실이 배경을 물체처럼 학습시켜요. 7클래스 단일 task head에서는 크래시가 나요. | 결정대로 car 채널을 쓰게 바꿔요. | |
+| PDBEV-3 | `datasets/pipelines/loading_UDA.py:549-550` vs `:538-543` (사용: `models/detectors/pcbev.py:76-79`) | 가상 카메라 렌더링에는 `rot_aug`(key-ego 기준 절대 회전)와 `tran_aug = sensor2sensor_aug[:3, 3]`(상대 이동)을 짝지어 써요. 가상 뷰 타깃에는 절대 이동(t+δ)을 써요. | B11 → C08 partly_wrong (불일치는 맞고, 크기 설명만 일부 고침) | 코드에서 확인 | 렌더링한 카메라와 타깃 카메라의 위치가 달라요(수 m). | | |
+| PDBEV-4 | `datasets/pipelines/loading_UDA.py:929, 1063` | `gt_labels[i] < classes_num` 검사를 −1(학습하지 않는 클래스)도 통과해요. 그래서 음수 인덱스로 마지막 클래스 채널에 그려져요. | M03 (검증에서 추가) | 코드에서 확인 | PCCR 7클래스 설정에서는 traffic_sign/light가 child 채널에 그려져요. nuScenes에는 −1 라벨이 없어서 생기지 않던 문제예요. | | |
+| PDBEV-5 | `datasets/pipelines/loading_UDA.py:860, 998` | 2D 타깃을 범위·이름 필터를 거치기 전의 `results['ann_infos']`로 만들어요. | M04 | 코드에서 확인 | BEV 범위(±51.2 m) 밖이나 학습하지 않는 클래스의 물체도 2D·렌더 타깃이 돼요. | | |
+| PDBEV-6 | `datasets/pipelines/loading_UDA.py:938-952, 1072-1086` | 타깃을 `y_int-1:y_int+2` 슬라이스로 써요. crop 뒤 중심이 맵 위쪽 밖(`y_int ≤ −3`)이면 시작과 끝이 둘 다 음수라 **맵 아래쪽 행에** 써져요. | M02 | 코드에서 확인 | 엉뚱한 위치에 회귀·depth 타깃이 써져요. | | |
+| PDBEV-7 | `datasets/pipelines/loading_UDA.py:868-876, 898` | 유효성 검사를 카메라 0의 이미지 크기와 **증강 전** 좌표로 해요. | B20 → C14 confirmed | 코드에서 확인 | PCCR은 카메라 크기가 모두 같아서 크기 부분은 무해해요. 증강 전 좌표로 검사하는 게 PDBEV-6의 원인이에요. | | |
+| PDBEV-8 | `models/necks/view_transformer_pc.py:253` | IFV z-bin 크기를 `int(z범위 / height_num)`로 계산해요. | M05 | 코드에서 확인 | 공식 설정(8 m / 4칸)과 PCCR 설정(12 m / 4칸)은 나누어떨어져서 **발동하지 않아요.** 나누어떨어지지 않으면 z 범위 일부가 빠지거나, 0으로 나누게 돼요. | | |
+| PDBEV-9 | `datasets/pipelines/loading_UDA.py:591-595` | 실제 intrinsic(`intrins_actual`)에 resize와 crop만 반영하고 flip은 반영하지 않아요. | M13 | 코드에서 확인 | 뒤집힌 샘플은 DepthNet 카메라 입력의 cx'가 틀려요. | | |
+| PDBEV-10 | `datasets/pipelines/loading_UDA.py:351-381` | 섭동용 Euler 각 이름이 카메라 축과 맞지 않아요. `pitch_aug`는 영상을 화면 안에서 돌리고(roll), `roll_aug`는 카메라를 위아래로 기울여요(pitch). | M09 | 코드에서 확인 | PD-BEV-A는 두 범위가 같아서(±0.04 rad) 영향이 없어요. PD-BEV-B에서 pitch 범위를 따로 줄 때는 중요해요. | | |
+| PDBEV-11 | `models/detectors/pcbev.py:90-92` → `view_transformer_pc.py:312, 345, 353` | 같은 BEV에 `BEV_Aux`를 iteration마다 3번 돌려요. | M07 | 코드에서 확인 | BatchNorm running stat이 한 step에 3번 갱신돼요. 계산도 3배예요. | | |
+| PDBEV-12 | `models/necks/img_aux.py:869-871` | IFV(높이 × feature)에 sigmoid가 없어요. 논문 식 3에는 있어요. | B22 → C22 confirmed | 코드에서 확인 | 논문과 계산이 달라요. | | |
+| PDBEV-13 | `models/necks/img_aux.py:73-83` | 2D heatmap focal loss가 negative 항을 negative 픽셀 수로 나눠요. CenterNet은 positive 수로 나눠요. | M08 | 코드에서 확인 | 2D·렌더 heatmap 손실의 크기가 달라져요. 논문 표기를 확인한 뒤 고칠지 정해요. | | |
+| PDBEV-14 | `models/necks/img_aux.py:316-352, 640-676` | 회귀 손실을 전체 픽셀로 평균해요(positive는 몇 %뿐이에요). | B25 | 미확인 | 속성 손실의 실제 가중치가 아주 작아요. 논문 표기를 확인한 뒤 정해요. | | |
+| PDBEV-15 | `models/detectors/pcbev.py:62-69, 110-124` | `PCBEV_DG.simple_test`가 고장 나 있어요(시그니처 불일치, 학습 전용 입력 필요). | B07 → C03 confirmed | 코드에서 확인 | 공식 평가는 `BEVDepth_DG` 설정으로 해요. 우리도 추론은 기본 검출기 경로로 해요. | | |
+| PDBEV-16 | `datasets/pipelines/loading_UDA.py:260` | 테스트 때 crop이 무작위예요. | B21 | 미확인 | 평가가 실행마다 달라질 수 있어요. | | |
+
+**논문과 코드가 다른 값:** yaw 섭동은 논문 부록 C.1 본문에서 0.2 rad, 공식 설정에서 0.4 rad예요(B22 → C22). 논문 그림 9와 표 1 수치는 0.4와 맞아서, 사용자 결정으로 PD-BEV-A는 0.4를 써요(2026-11-22).
+
+**논문으로 확인한 의도 (arXiv 2310.11346v3, 2026-11-22에 직접 읽음)**
+- depth 감독은 LiDAR가 아니라 3D 박스로 만든 전경 depth예요: "the depth D here is the foreground depth information provided using 3D boxes rather than the point cloud". LiDAR depth는 부록 C.2의 비교 실험에만 나와요. 그래서 BEVDepth + PD-BEV는 LiDAR depth 손실을 쓰지 않아요(공식 코드와 같아요).
+- 식 3은 `V_ifv = sigmoid(F_height) · F_bev`예요. 그래서 PDBEV-12는 버그가 맞아요.
+- 2D head 손실은 "Following CenterPoint, focal loss and L1 loss are used"라고만 적혀 있고, 정규화 방법은 없어요. CenterPoint 구현은 focal과 L1을 둘 다 positive 수로 나눠요. 그래서 PDBEV-13, PDBEV-14는 CenterPoint 방식을 의도로 봐요.
+
+**PCCR 적응 (버그는 아니지만 바꿔야 하는 것)**
+- 카메라 이름 6개가 하드코딩돼 있어서 `data_config['cams']`를 무시해요. PCCR 리그는 모두 여기서 깨져요(`loading_UDA.py:492-501`, C11).
+- 렌더링 상수가 하드코딩돼 있어요: 0.8 m 셀, depth bin 1..51(`view_transformer_pc.py:358-366`, C13).
+- FOV 120° 리그(R5~R9)에서는 virtual depth 범위가 약 0.45~44.7 m라서 car 평가 범위 50 m보다 짧아요(M11).
+
+**PD-BEV에서 해당 없는 것**
+- `torch.max` depth 다운샘플(`view_transformer_pc.py:632-635`, B12 → C09)은 공식 `BEVDepth_DG` 기준선의 LiDAR depth 경로에만 있어요. PD-BEV 학습은 LiDAR depth를 쓰지 않아요(C10). 우리 vanilla BEVDepth는 원본 클래스를 복원해서 이 문제가 없어요.
+- UDA 전용 경로: B10, B13~B17 (부호, 타깃 self-training, UDA 데이터셋).
+- 인프라 문제(README 등): B00~B03, B18, B19, B24, B26.
+- 이미 고친 것: B04 `/mnt/cfs` 덤프, B05 anomaly detection(커밋 `0be7094`), B06 `evaluate`의 `save_path`(커밋 `ed177d0`).
+
+## UDGA: 재구현할 때 의도대로 만들 부분
+
+UDGA는 코드 기반이 달라서 재구현해요([porting_plan.md](porting_plan.md) 3장). 위치는 `third_party/UDGA/` 기준이에요.
+
+| ID | 위치 | 문제 | 발견 | 재구현에서 |
+|---|---|---|---|---|
+| UDGA-1 | `bevssl.py:62-74` | 재투영 점은 (D, w, h) 순서로 만들고 logit은 (D, h, w)로 펼쳐요. 그래서 점마다 다른 픽셀의 logit이 붙어요(실제 크기에서 점의 99.8%). | U02 (순수 Python 재현) → V06 confirmed (검증자도 직접 재현) | view transformer의 frustum `(D, fH, fW)` 점을 그대로 써서 순서를 맞춰요. |
+| UDGA-2 | 타깃 `bevssl_unsupdepth.py:75` 등 vs lift `view_transformer.py:488-489` | depth 타깃은 d/k, lift는 bin/k예요. k ≈ 1일 때만 서로 맞아요. | U03 → V08 confirmed | 타깃과 lift에 같은 변환을 써요. |
+| UDGA-3 | `bevssl.py:64, 126` | 재투영할 때 bin 번호를 미터 depth로 쓰고 pixel_const를 무시해요. | U04 | bin 중심의 실제 depth를 써요. |
+| UDGA-4 | `bevssl.py:174, 212-218` | photometric 손실이 argmax와 정수 인덱싱을 거쳐서 그래디언트가 0이에요. 로그에만 찍혀요. | U05 → V07 confirmed | 논문 식 4처럼 그래디언트가 흐르게 구현해요. |
+| UDGA-5 | `lyft_yawaug.py:62-83` | extaug가 박스와 외부 파라미터는 회전하지만 LiDAR 점은 회전하지 않아요. 증강된 절반은 depth GT가 틀려요. | U06 → V09 confirmed | 점도 같은 회전으로 옮겨요. |
+| UDGA-6 | `bevssl_unsupdepth.py:135`, `bevssl.py:126` | mask가 비면 SmoothL1이 NaN이고, scatter 중복 쓰기는 GPU에서 비결정적이에요. | U07 → V11 partly_wrong (쌍 하나가 비는 건 괜찮고, 전체가 비면 NaN) | 빈 mask를 막고, 결정적으로 모아요. |
+| UDGA-7 | `bevssl.py:33-45` | 카메라 쌍이 nuScenes 6대 링으로 하드코딩돼 있어요. | V05 | 캘리브레이션에서 겹침 비율로 쌍을 계산해요. 6대 링이면 원래 쌍 12개가 그대로 나와요. |
+| UDGA-8 | `bevssl.py:55` vs `bevssl_unsupdepth.py:112` | 배치 크기를 두 곳에서 다르게 계산해요. 카메라 10대면 크래시가 나요. | W03 | 재구현에서는 한 곳에서만 계산해요. |
+| UDGA-9 | `bevssl_unsupdepth.py:127-135` | 겹침 손실이 D축으로 sparse하고, 픽셀 mask를 89 bin 전체로 펼쳐요. | W01 | 구현할 때 정의를 정해서 기록해요. |
+
+**UDGA에서 해당 없는 것:** LEDA/adapter 관련(U08, U09)은 target 라벨이 있는 적응 단계 전용이라 DG 표에서는 안 써요. CMKD(U10), 인프라(U00, U11~U16), NDS* 정규화(U14, 우리는 PCCR 평가를 써요)도 해당 없어요.
