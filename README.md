@@ -10,7 +10,7 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 | 표의 행 | View transform | Base 코드 | 상태 |
 |---|---|---|---|
 | BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | **완료** (2026-11-22): R1 30.4 ([results.md](docs/results.md)) |
-| BEVDepth + PD-BEV | Forward | `bevdepth/` | 준비 중 |
+| BEVDepth + PD-BEV | Forward | `bevdepth/` (공식 코드 버그는 논문 의도대로 수정, [bug_ledger.md](docs/bug_ledger.md)) | PD-BEV-A R1 학습 중 (2026-11-22, GPU 0·1), PD-BEV-B 준비됨 |
 | BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 mmdet3d 1.0 기준으로 재구현) | 준비 중 |
 | BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | 포팅 완료, R1 학습 준비 (2026-11-22) |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
@@ -43,6 +43,7 @@ Gen2E/
 │   ├── download_bevformer_pretrained.sh  BEVFormer-S 백본 ImageNet 가중치 (sha256 확인)
 │   ├── check_bevformer_pccr.py  BEVFormer PCCR 어댑터 확인 (박스 변환, GT 평가, 투영)
 │   ├── check_pccr_eval_copy.py  BEVFormer의 PCCR 평가 코드가 PCCR 원본과 같은지 확인
+│   ├── bugrepro/            PD-BEV 버그 재현 체크(CPU)와 GPU 스모크 체크
 │   ├── setup_env_bevdepth.sh
 │   └── setup_env_bevformer.sh
 └── data/pccr -> /data2/PCCR (심볼릭 링크, git 제외)
@@ -106,6 +107,7 @@ python -I tools/check_bevformer_pccr.py eval-gt R6 test
 | [docs/environment.md](docs/environment.md) | conda env 2개 구성과 4090 관련 메모 |
 | [docs/porting_plan.md](docs/porting_plan.md) | baseline별 포팅 계획, 코드 분석에서 찾은 버그·하드코딩 |
 | [docs/results.md](docs/results.md) | 표에 들어갈 결과 수치와 실행 정보 |
+| [docs/bug_ledger.md](docs/bug_ledger.md) | PD-BEV·UDGA 공식 코드 버그: 발견 경위, 재현 체크, 수정 전/후, 커밋 |
 | [docs/progress.md](docs/progress.md) | 날짜별 진행 기록 |
 
 ## Upstream 출처

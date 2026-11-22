@@ -56,8 +56,28 @@
   - 스모크 체크포인트로 R5(카메라 4대)와 R1-c10(10대) test 평가 경로도 확인했어요.
 - **BEVFormer-S R1 학습을 시작했어요** (20:42, GPU 2·3). 0.77 s/iter이고 약 10시간 걸려요. 출력은 `bevformer/work_dirs/bevformer_small_pccr/R1/`, 로그는 `logs/train_bevformer_small_pccr_R1.log`예요.
 
+- **결과 기록 도구 보강 (리뷰 반영):** 리그 평가 결과마다 체크포인트를 남기고, 집계에서 결과가 없는 리그는 `--`로 표시해요. 스크립트의 PORT 인자는 숫자일 때만 PORT로 읽어요.
+- **PD-BEV·UDGA 결정 (사용자)**
+  - 공식 코드 버그는 논문 의도대로 고쳐요.
+  - car 전용 BEV 보조 손실은 빼요. 논문에 없고, 공식 학습에서도 동작하지 않았어요.
+  - 손실 정규화는 공식 그대로 둬요.
+  - 기본 구조는 vanilla BEVDepth와 같게 해요.
+  - 섭동 범위는 A(논문·공식)와 B(PCCR 리그) 두 가지를 다 돌려요.
+- **버그 장부 [bug_ledger.md](bug_ledger.md):**
+  - 버그마다 발견 경위를 적었어요: 2026-11-21 분석 → 독립 검증 → 2026-11-22 재확인. 원자료 JSON은 `docs/analysis/2026-11-21/`에 넣었어요.
+  - 재현 체크(`tools/bugrepro/pdbev_checks.py`)는 공식 코드에서 11개가 모두 FAIL이었어요. 버그를 하나씩 고쳐서 모두 PASS가 됐어요.
+  - 구현하면서 새로 찾은 문제도 넣었어요: 보조 head의 ReLU 바닥(PDBEV-17), 평가 크래시(PDBEV-18).
+- **PD-BEV 포팅:** 커밋 `0318e03`~`a1ee9cd`예요.
+  - PCCR 카메라 적응, 버그 수정 16개, BEV 보조 손실 제거, 설정 A·B를 넣었어요.
+  - GPU 스모크에서 BEV_aux가 step당 1번 돌고, 추론이 되고, 그래디언트가 462/462개 파라미터에 흘렀어요.
+  - 2-GPU mini 학습과 평가도 통과했어요(0.91 s/iter, GPU당 13.7 GB).
+- **PD-BEV-A R1 학습을 시작했어요** (23:13, GPU 0·1). 약 3시간 반 걸려요. 출력은 `bevdepth/work_dirs/pdbev-r50-pccr-A/R1/`예요.
+
 ## 다음 할 일
 
-1. BEVFormer-S R1 학습이 끝나면(약 10시간) 14개 리그를 평가해요: `bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3`
-2. 남은 결정에 답을 받아요([decisions.md](decisions.md)의 "확인 필요"). 기존 BEVFormer-S 코드, PD-BEV head 구성, 공식 코드 버그 처리가 남았어요.
-3. PD-BEV(2장, 5장)와 UDGA(3장)를 이식해요.
+1. 학습이 끝나면 14개 리그를 평가해요.
+   - BEVFormer-S(GPU 2·3, 내일 아침 7시쯤 끝남): `bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3`
+   - PD-BEV-A(GPU 0·1, 내일 새벽 3시쯤 끝남): `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/pdbev-r50-pccr-A/R1 0,1`
+2. PD-BEV-B를 학습해요. A가 끝나면 GPU 0·1에서 돌려요.
+3. UDGA를 재구현해요(3장). 대상은 장부의 UDGA-1~9예요.
+4. BEVFormer-S + PD-BEV를 만들어요(5장). BEVFormer-S 결과가 나온 뒤에 해요.
