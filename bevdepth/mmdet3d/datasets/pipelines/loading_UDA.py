@@ -257,7 +257,9 @@ class PrepareImageInputs_UDA(object):
             resize_dims = (int(W * resize), int(H * resize))
             newW, newH = resize_dims
             # crop_h = int((1 - np.mean(self.data_config['crop_h'])) * newH) - fH
-            crop_h = int((1 - np.random.uniform(*self.data_config['crop_h'])) * (newH - fH) / 2)
+            # Gen2E (PDBEV-16): deterministic crop aligned like the training crop (upstream BEVDet
+            # formula). Upstream PD-BEV drew a random value and centred the crop vertically.
+            crop_h = int((1 - np.mean(self.data_config['crop_h'])) * newH) - fH
             crop_w = int(max(0, newW - fW) / 2)
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
             flip = False if flip is None else flip
