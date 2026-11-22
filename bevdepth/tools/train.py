@@ -117,7 +117,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    torch.autograd.set_detect_anomaly(True)
+    # Gen2E: PD-BEV left anomaly detection on for every run, which slows training a lot.
+    # Opt in with GEN2E_DETECT_ANOMALY=1.
+    if os.environ.get('GEN2E_DETECT_ANOMALY') == '1':
+        torch.autograd.set_detect_anomaly(True)
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)

@@ -242,7 +242,8 @@ def main():
             broadcast_buffers=False)
         outputs = multi_gpu_test(model, data_loader, args.tmpdir,
                                  args.gpu_collect)
-    mmcv.dump(outputs, os.path.join('/mnt/cfs/algorithm/hao.lu/Code/BEVDepth_pg/work_dirs/bevdet-r50-cbgs-DA2X-all', 'output.pkl'))
+    # Gen2E: removed PD-BEV's unconditional dump to a hard-coded /mnt/cfs path (crashes on
+    # every other machine). Use --out to save the raw outputs.
     rank, _ = get_dist_info()
     if rank == 0:
         if args.out:
