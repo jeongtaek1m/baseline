@@ -250,7 +250,9 @@ class LSSViewTransformer_pc(LSSViewTransformer):
         else:
             self.BEV_aux_cfg = BEV_Aux
             self.BEV_aux = builder.build_neck(self.BEV_aux_cfg)
-            self.revised_interval = int(self.grid_interval[2] / self.BEV_aux_cfg.height_num)
+            # Gen2E (PDBEV-8): float bin size so the height_num bins cover the whole z range.
+            # Upstream used int(...), which drops part of the range unless height_num divides it.
+            self.revised_interval = float(self.grid_interval[2]) / self.BEV_aux_cfg.height_num
         self.loss_depth_weight = loss_depth_weight
         self.depth_net = DepthNet(self.in_channels, self.in_channels,
                                   self.out_channels, self.D, 31, **depthnet_cfg)
