@@ -489,7 +489,13 @@ class PrepareImageInputs_UDA(object):
         post_rots = []
         post_trans = []
         intrins_actuals = []
-        if 'Camera_Front' in results['curr']['cams'].keys():
+        if self.data_config.get('cams', ()) is None:
+            # Gen2E (PCCR): all cameras of the rig in info order, each with its own ego pose
+            # (pipeline ego_cam=None; PCCR cameras share the LiDAR ego pose). Upstream only knows
+            # the 6 DeepAccident / nuScenes names below and ignores data_config['cams'].
+            cam_names = list(results['curr']['cams'].keys())
+            results['cam_names'] = cam_names
+        elif 'Camera_Front' in results['curr']['cams'].keys():
             self.ego_cam = 'Camera_Front'
             cam_names = ['Camera_FrontLeft', 'Camera_Front', 'Camera_FrontRight',
                          'Camera_BackLeft', 'Camera_Back', 'Camera_BackRight']
