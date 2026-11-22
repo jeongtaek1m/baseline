@@ -71,8 +71,12 @@ class PerceptionTransformer(BaseModule):
         """Initialize layers of the Detr3DTransformer."""
         self.level_embeds = nn.Parameter(torch.Tensor(
             self.num_feature_levels, self.embed_dims))
-        self.cams_embeds = nn.Parameter(
-            torch.Tensor(self.num_cams, self.embed_dims))
+        # Gen2E: create the per-camera embedding only when it is used. A [num_cams, C] table
+        # cannot follow rigs with 4-10 cameras, and an unused parameter breaks DDP
+        # (find_unused_parameters=False) when use_cams_embeds=False.
+        if self.use_cams_embeds:
+            self.cams_embeds = nn.Parameter(
+                torch.Tensor(self.num_cams, self.embed_dims))
         self.reference_points = nn.Linear(self.embed_dims, 3)
         self.can_bus_mlp = nn.Sequential(
             nn.Linear(18, self.embed_dims // 2),
@@ -96,7 +100,8 @@ class PerceptionTransformer(BaseModule):
                 except AttributeError:
                     m.init_weights()
         normal_(self.level_embeds)
-        normal_(self.cams_embeds)
+        if self.use_cams_embeds:  # Gen2E: see init_layers
+            normal_(self.cams_embeds)
         xavier_init(self.reference_points, distribution='uniform', bias=0.)
         xavier_init(self.can_bus_mlp, distribution='uniform', bias=0.)
 
