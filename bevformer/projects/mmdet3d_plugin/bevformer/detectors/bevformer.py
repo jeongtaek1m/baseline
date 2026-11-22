@@ -219,7 +219,12 @@ class BEVFormer(MVXTwoStageDetector):
         img = img[:, -1, ...]
 
         prev_img_metas = copy.deepcopy(img_metas)
-        prev_bev = self.obtain_history_bev(prev_img, prev_img_metas)
+        # Gen2E: with queue_length=1 (single frame) there is no previous frame. Upstream calls
+        # obtain_history_bev on the empty queue, which crashes.
+        if len_queue > 1:
+            prev_bev = self.obtain_history_bev(prev_img, prev_img_metas)
+        else:
+            prev_bev = None
 
         img_metas = [each[len_queue-1] for each in img_metas]
         if not img_metas[0]['prev_bev_exists']:
