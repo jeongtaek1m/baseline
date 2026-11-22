@@ -364,9 +364,13 @@ class PrepareImageInputs_UDA(object):
         # 返回四元数，[w, x, y, z]
         pitch, yaw, roll = e
         if aug_flag:
-            pitch += np.random.uniform(*self.data_config['pitch_aug'])
+            # Gen2E (PDBEV-10): these are the ZYX Euler angles of sensor2ego. For a level camera
+            # (x right, y down, z forward) the Euler roll (about camera x) tilts the camera and the
+            # Euler pitch spins it about the optical axis, so pitch_aug goes to roll and roll_aug
+            # to pitch. Upstream added them by name, i.e. swapped (harmless while both are 0.04).
+            pitch += np.random.uniform(*self.data_config['roll_aug'])
             yaw += np.random.uniform(*self.data_config['yaw_aug']) # 这个幅度要大一点
-            roll += np.random.uniform(*self.data_config['roll_aug'])
+            roll += np.random.uniform(*self.data_config['pitch_aug'])
         # print(pitch, yaw, roll)
         cy = cos(yaw * 0.5)
         sy = sin(yaw * 0.5)

@@ -35,7 +35,7 @@
 | PDBEV-7 | `datasets/pipelines/loading_UDA.py:868-876, 898` | 유효성 검사를 카메라 0의 이미지 크기와 **증강 전** 좌표로 해요. | B20 → C14 confirmed | 코드에서 확인 | PCCR은 카메라 크기가 모두 같아서 크기 부분은 무해해요. 증강 전 좌표로 검사하는 게 PDBEV-6의 원인이에요. | | |
 | PDBEV-8 | `models/necks/view_transformer_pc.py:253` | IFV z-bin 크기를 `int(z범위 / height_num)`로 계산해요. | M05 | 코드에서 확인 | 공식 설정(8 m / 4칸)과 PCCR 설정(12 m / 4칸)은 나누어떨어져서 **발동하지 않아요.** 나누어떨어지지 않으면 z 범위 일부가 빠지거나, 0으로 나누게 돼요. | `view_transformer_pc.py:253`의 `int(z / height_num)`를 `float(z) / height_num`으로 바꿨어요. |  |
 | PDBEV-9 | `datasets/pipelines/loading_UDA.py:591-595` | 실제 intrinsic(`intrins_actual`)에 resize와 crop만 반영하고 flip은 반영하지 않아요. | M13 | 코드에서 확인 | 뒤집힌 샘플은 DepthNet 카메라 입력의 cx'가 틀려요. | | |
-| PDBEV-10 | `datasets/pipelines/loading_UDA.py:351-381` | 섭동용 Euler 각 이름이 카메라 축과 맞지 않아요. `pitch_aug`는 영상을 화면 안에서 돌리고(roll), `roll_aug`는 카메라를 위아래로 기울여요(pitch). | M09 | 코드에서 확인 | PD-BEV-A는 두 범위가 같아서(±0.04 rad) 영향이 없어요. PD-BEV-B에서 pitch 범위를 따로 줄 때는 중요해요. | | |
+| PDBEV-10 | `datasets/pipelines/loading_UDA.py:351-381` | 섭동용 Euler 각 이름이 카메라 축과 맞지 않아요. `pitch_aug`는 영상을 화면 안에서 돌리고(roll), `roll_aug`는 카메라를 위아래로 기울여요(pitch). | M09 | 코드에서 확인 | PD-BEV-A는 두 범위가 같아서(±0.04 rad) 영향이 없어요. PD-BEV-B에서 pitch 범위를 따로 줄 때는 중요해요. | `euler_to_quaternion`에서 `pitch_aug`를 Euler roll(카메라 x축 회전 = 기울기)에, `roll_aug`를 Euler pitch(광축 회전)에 더하게 바꿨어요. yaw는 그대로예요. |  |
 | PDBEV-11 | `models/detectors/pcbev.py:90-92` → `view_transformer_pc.py:312, 345, 353` | 같은 BEV에 `BEV_Aux`를 iteration마다 3번 돌려요. | M07 | 코드에서 확인 | BatchNorm running stat이 한 step에 3번 갱신돼요. 계산도 3배예요. | | |
 | PDBEV-12 | `models/necks/img_aux.py:869-871` | IFV(높이 × feature)에 sigmoid가 없어요. 논문 식 3에는 있어요. | B22 → C22 confirmed | 코드에서 확인 | 논문과 계산이 달라요. | `BEV_Aux.forward`에서 `bev_height`에 `.sigmoid()`를 붙였어요(논문 식 3). PDBEV-17의 선형 출력층이 있어야 0~1 전 범위를 써요. |  |
 | PDBEV-13 | `models/necks/img_aux.py:73-83` | 2D heatmap focal loss가 negative 항을 negative 픽셀 수로 나눠요. CenterNet은 positive 수로 나눠요. | M08 | 코드에서 확인 | 2D·렌더 heatmap 손실의 크기가 달라져요. 논문 표기를 확인한 뒤 고칠지 정해요. | **공식 유지**(2026-11-22 결정: 논문에 정규화 명시 없음) | |
@@ -81,7 +81,7 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-6/7 | 크롭으로 위쪽 물체가 맵 밖으로 나가게 한 뒤, mask 셀을 기준 3×3 창과 비교해요. | FAIL: 물체 창 밖 mask 셀 125개 | | |
 | PDBEV-8 | z 8 m, height_num 3으로 view transformer를 만들고 z-bin이 덮는 범위를 재요. | FAIL: 3칸 × 2 m = 6 m (8 m 중) | PASS: 3칸 × 2.667 m = 8.0 m |  |
 | PDBEV-9 | flip한 샘플에서 실제 intrinsic으로 투영한 픽셀과 증강 행렬로 옮긴 픽셀을 비교해요. | FAIL: 110.5 px 차이 | | |
-| PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | | |
+| PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | PASS: pitch_aug는 카메라 x축, roll_aug는 카메라 z축으로 돌려요. |  |
 | PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | PASS: 최대 차이 0 (부동소수점 수준) |  |
 | PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | | |
 | PDBEV-17 | conv 가중치를 무작위로 다시 뽑아 학습 뒤 상태를 흉내 내고, 세 보조 head의 sigmoid(출력) 최솟값을 재요. 마지막 연산이 ReLU면 어떤 가중치에서도 0.5 이상이에요. | FAIL: Img_Aux 0.500, Img_Aux_Dy 0.500, BEV_Aux height 0.500 (ReLU 바닥) | PASS: conv 가중치를 무작위로 다시 뽑았을 때 Img_Aux 0.029, Img_Aux_Dy 0.354, BEV_Aux height 0.083 (공식 코드는 같은 조건에서도 0.500) |  |
