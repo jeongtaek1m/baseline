@@ -894,7 +894,8 @@ class BEV_Aux(nn.Module):
 
 
         #print('feats', feats.size())
-        bev_height = feats[:, 0:self.height_num, ...]
+        # Gen2E (PDBEV-12): paper eq. 3, V_ifv = sigmoid(F_height) * F_bev (upstream had no sigmoid).
+        bev_height = feats[:, 0:self.height_num, ...].sigmoid()
         bev_feature = feats[:, self.height_num:, ...]
         bev_voxel = bev_height.unsqueeze(1) * bev_feature.unsqueeze(2)
         unused_loss = 0.0*bev_voxel.mean().mean().mean().mean().mean()
