@@ -12,7 +12,7 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 | BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | **완료** (2026-11-22): R1 30.4 ([results.md](docs/results.md)) |
 | BEVDepth + PD-BEV | Forward | `bevdepth/` (공식 코드 버그는 논문 의도대로 수정, [bug_ledger.md](docs/bug_ledger.md)) | PD-BEV-A **완료** (2026-11-23): R1 27.8, OOD 평균 18.8. PD-BEV-B R1 학습 중 (GPU 0·1) |
 | BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 vanilla BEVDepth 위에 재구현, 공식 코드 버그는 논문 의도대로 수정) | 재구현 완료, R1 학습 (2026-11-23, GPU 2·3) |
-| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | R1 학습 완료 (2026-11-23), 14개 리그 평가 중 |
+| BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | **완료** (2026-11-23): R1 34.5, OOD 평균 25.1, 독립 검증 통과. 기존 행(R1 21.1)은 재현되지 않아요 |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
 | + UniDrive, + CoIn3D | — | — | 이번 범위에서 제외 |
 

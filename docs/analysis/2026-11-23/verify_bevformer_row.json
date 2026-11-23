@@ -1,0 +1,485 @@
+{
+ "workflow": "verify-bevformer-pccr-row",
+ "run_id": "wf_0e206193-a03",
+ "date": "2026-11-23",
+ "claim": "BEVFormer-S (R1-trained) 7-class test mAP on 14 PCCR rigs",
+ "logs": [
+  "leakage-sanity: 2 issue(s) not sent to refutation (only the most severe non-low issue per lens is refuted)",
+  "frame-geometry: 2 issue(s) not sent to refutation (only the most severe non-low issue per lens is refuted)",
+  "metric-recompute: 1 issue(s) not sent to refutation (only the most severe non-low issue per lens is refuted)",
+  "provenance: 2 issue(s) not sent to refutation (only the most severe non-low issue per lens is refuted)"
+ ],
+ "synth": {
+  "trustworthy": "yes_with_caveats",
+  "summary": "The 14 claimed values can be trusted as computed. The caveats concern how the row compares with other rows, not the values themselves.\n\n- **Values reproduce.** I recomputed them from the stored metrics_summary.json files myself: the largest difference is 0.0005, every checkpoint.txt says epoch_24.pth, and latest.pth points to epoch_24.pth. The verifiers also reproduced them from the raw results_nusc.json through the PCCR evaluation path (94 fields per rig, difference 0) and with two separately written from-scratch evaluators (identical per-class APs on all 14 rigs).\n- **Right data per rig.** Each rig's results contain exactly its own 1800 test tokens. A CPU re-run of epoch_24 on each rig's own images matched the stored boxes (within 8.2 cm and 0.0032 score). Feeding R1's images instead puts the boxes 11 to 19 m off.\n- **Clean training.** Training used R1 train only, and the test towns (Town03/06/07) never appear in it. The final epoch was used, with no epoch picked on test. Test inputs carry no ground truth (GT).\n- **No sign of leakage.** The predictions look like a real detector's. R1 val (41.67) is higher than R1 test (34.54), the opposite of what test leakage would do.\n- **Frame chain is correct.** Feeding GT in as predictions gives mAP 100 on R1, R4, R5, R6, R9 and R1-f.\n- No lens found an issue above low severity, so no skeptic refutations were run.\n\n**Caveats (comparisons only):**\n- BEVFormer keeps all 300 boxes per sample with no score floor. BEVDepth has a 0.1 floor, and applying it to BEVFormer costs 1.3 points on R1.\n- On R4, R5, R6, R8 and R9 the vehicle-fixed frame differs from the LiDAR frame that the PETR† and Fast-BEV† rows used. The size of this effect has not been measured.\n- There is only one training run, so seed-to-seed noise is unknown.\n- Only 15 of the 25,200 test samples were re-run.\n\n**The older row is not reproduced.** Ours is higher by 13.4 (R1), 13.2 (R1-c6) and 8.0 (R1-c10). The older row's code and settings are unknown, so the gap cannot be attributed to anything. The frame is ruled out for these three rigs. You need to supply the older row's code or settings before deciding which BEVFormer-S row goes in the table.\n\nFor context (docs/results.md): the older row's R1 of 21.1 is below BEVDet† 25.2, BEVFusion-C† 26.0 and our BEVDepth 30.43. Our 34.536 is below the BEVDepth [42] row in your table (36.85).",
+  "confirmed_problems": [
+   "Score floor differs between the compared rows. BEVFormer keeps all 300 boxes per sample (max_num=300; the config sets no score_threshold), while BEVDepth's results contain no box below 0.1. Applying a 0.1 floor to BEVFormer gives R1 33.228 (-1.31), R5 8.097 (-0.43) and R9 12.258 (-0.74). Impact: this accounts for 0.4 to 1.3 points of the BEVFormer-vs-BEVDepth gap. R1 still favours BEVFormer (33.2 vs 30.4), and the claimed values are unaffected.",
+   "The frame differs from the dagger rows' frame on five rigs. BEVFormer uses the vehicle-fixed frame (ref2ego [-0.46,0,1.86]); PETR† and Fast-BEV† used each rig's own LiDAR frame. On the 9 etron rigs the two frames are identical. They differ on R4/R5/R8 (rig LiDAR sits at [+0.24,0,-0.36] in the ref frame), R6 ([+0.10,0,+2.94]) and R9 ([+3.06,0,+2.32]). Impact: on those 5 rigs, comparisons with the dagger rows (and with the older row, if it used the LiDAR frame) are not like-for-like, and the size of the effect is unmeasured. BEVDepth uses the ego frame and is consistent with BEVFormer. The table must state the frame.",
+   "The official zero-points filter keeps a different GT set on each rig. This is a property of the PCCR protocol, not an error in the claim. num_lidar_pts differs between same-vehicle rigs (30725 of 46369 matched objects). After filtering, adult GT is 4778 in R1 vs 1982 in R1-c10, and child GT is 1153 vs 380. Impact: without the filter the values drop by about 1.5 to 1.8 (R1 32.83), and the gaps between each rig and R1 move by at most 0.68. It applies the same way to every row.",
+   "Auditability gap. The test log does not echo the effective data_root or ann_file. A wrong data_root would silently load another rig's images, because the file names are the same in every rig and R1-f/r/t use R1's camera names. Only the KeyError raised by the evaluation's GT-table lookup guards against this. Impact: none here, since token matches and re-inference confirm each rig's own data. It is a latent risk for future runs, for example with format_only.",
+   "Orientation error is high (mAOE 1.02 to 1.27). This is genuine model error, not a convention bug: feeding GT through as predictions gives AOE of at most 0.0055. Impact: NDS and AOE only, not mAP. Side findings that affect no mAP: BEVDepth's adult AOE is 1.73 (above pi/2) with a flat |dyaw| histogram, and BEVDepth stores z as the box bottom."
+  ],
+  "refuted_problems": [
+   "No skeptic refutation rounds ran because every lens issue was low severity. The concerns below were tested directly and ruled out.",
+   "Wrong rig data or a data_root mix-up: ruled out. Each results file holds exactly its rig's 1800 test tokens (0 missing, 0 extra), and no two rigs share any sample token. CPU re-inference of epoch_24 on 15 samples, using each rig's own images, reproduces the stored boxes within 8.2 cm and 0.0032 score. Wrong-image controls are 11.6 to 19.1 m off.",
+   "Stale files or transcription errors: ruled out. All 14 values match the metrics_summary.json files (my own check: largest difference 0.0005). Re-evaluating each results_nusc.json reproduces all 94 numeric fields with difference 0. Output timestamps run strictly in rig order, all after epoch_24.pth.",
+   "Wrong checkpoint, or an epoch chosen on test data: ruled out. All 14 rigs used epoch_24, the last epoch. An epoch_23 control deviates 10 to 100 times more than epoch_24. The per-epoch evaluation used R1 val (1020 samples), not test.",
+   "Metric errors (wrong classes, label permutation, tie handling): ruled out. Two from-scratch evaluators reproduce every per-class, per-threshold AP exactly on all 14 rigs. Only the 7 classes are present. Per-class median box sizes match the GT. Reversing the order of tied scores changes R1 by 0.0002.",
+   "GT leakage at test time: ruled out. Test inputs are only img and img_metas, with can_bus all zeros and no ann_info. There is no spike of predictions at zero distance from GT, and 0 predictions fall within 1 cm in centre and 1 mm in size. On R1, localisation quality is close to BEVDepth's (median 0.86 m vs 0.92 m). Val 41.67 is higher than test 34.54.",
+   "Train/test overlap: ruled out. Train, val and test share 0 scenes, 0 tokens and 0 image names. The test towns (Town03/06/07) do not appear in train.",
+   "Frame or conversion bug, including on other vehicles: ruled out. Feeding GT through as predictions gives mAP 100 with ATE and ASE 0 on R1, R4, R5, R6, R9 and R1-f. Projections match the devkit to 0.000 px on every camera. Predicted car bottoms on R6 and R9 sit at the GT height (-1.851 and -1.840 vs about -1.858).",
+   "Modified evaluation code or config drift: ruled out. check_pccr_eval_copy passes, and git is clean. The work-dir config differs from the repo config only in gpu_ids and work_dir, and the config embedded in the checkpoint is identical to the work-dir copy.",
+   "The BEVFormer-vs-BEVDepth gap being an evaluation artifact: ruled out. The same independent evaluator reproduces both rows, and the devkit eval code is identical in the two environments. Only the score-floor difference (at most 1.3 points) remains."
+  ],
+  "unchecked": [
+   "Full re-inference was not done. Only 15 of the 25,200 test samples were re-run, on CPU. The rest rests on file-level evidence: one process per rig, exact token equality and exact re-evaluation.",
+   "Run-to-run variance. There is one training run, so the noise from training seeds behind the 3-decimal values is unknown.",
+   "How much the vehicle-fixed frame changes R4/R5/R6/R8/R9 compared with each rig's own LiDAR frame. Measuring it needs GPU inference with ref2ego=None.",
+   "How the older row (R1 21.1, R1-c6 19.6, R1-c10 26.2) was produced. Its code, training classes (7 or 9), metric definition, input resolution, initialisation, temporal setting, number of epochs, score floor, frame and GT filter are all unknown. Its R6 and R9 values, which would show its frame according to docs/decisions.md, are not in the claim. Its R1 value equals PETR†'s R1 (21.1), but its R1-c6 and R1-c10 do not match PETR†'s (18.8 and 21.0).",
+   "Whether the vendored third_party/pccr evaluation code equals upstream PCCR at commit 6798206, and whether tools/pccr_sha256.txt matches PCCR's official hashes.",
+   "Why num_lidar_pts differs between same-vehicle rigs in the PCCR tables.",
+   "Coverage limits. The prediction-vs-GT distance analysis covered only R1, R5, R9, R1-f and R2. The GT-as-prediction and box checks were not run on R1-c6, R1-c10, R1-r, R1-t, R2, R3, R5, R7 or R8. All 14 rigs were, however, reproduced by the independent evaluators.",
+   "Why BEVFormer stays robust across rigs (R1-f 24.7 vs BEVDepth 0.2; R2 23.4 vs 0.1). Only its reality was shown: on R1-f, median distance to GT is 1.07 m and 2 m GT coverage is 0.426, from R1-f's own images and intrinsics."
+  ],
+  "setup_facts_explaining_gap": [
+   "Ruled out on the rigs the older row reports: the vehicle-fixed frame is exactly the LIDAR_TOP frame on etron rigs (R1, R1-c6, R1-c10, R1-f, R1-r, R1-t, R2, R3, R7). The frame choice therefore cannot cause the gaps of +13.4 (R1), +13.2 (R1-c6) and +8.0 (R1-c10).",
+   "Also ruled out: test leakage, choosing an epoch on test data, wrong rig data and evaluation artifacts (see the refuted list).",
+   "The gap is not uniform: +13.4, +13.2 and +8.0. The older row has R1-c10 above R1 by 5.1, while ours has R1-c10 below R1 by 0.3.",
+   "Training classes: we train only the 7 evaluated classes (num_classes 7; traffic_sign and traffic_light are removed by ObjectNameFilter). PCCR's dagger baselines trained on 9 classes. What the older row used is unknown.",
+   "Input: native 1280x720 at scale 1.0 (R1 test tensor 8x3x736x1280), with an R101 backbone that has DCNv2 in stages 3 and 4. The measured R1 gain over BEVDepth (384x704 input) is in the small classes: bicycle 49.9 vs 38.7, adult 39.1 vs 27.5, child 9.8 vs 2.4. Car and bus are lower (40.2/24.2 vs 43.0/27.9). The older row's resolution is unknown.",
+   "No score floor: all 300 boxes per sample are kept. A 0.1 floor would lower R1 by 1.31. This can explain at most about 1.3 of the 13.4-point R1 gap, and only if the older row used such a floor (unknown).",
+   "Evaluation: PCCR's evaluation code, copied verbatim, with the devkit filter that drops GT boxes with zero points. Without that filter, R1, R1-c6 and R1-c10 score 32.83, 31.03 and 32.78 (-1.7, -1.8 and -1.4). This can explain at most about 1.8 points, and only if the older row was evaluated differently (unknown).",
+   "Training recipe: 24 epochs over all 3780 R1-train samples. Batch 8 (2 GPUs x 1 sample x 4 accumulation steps). AdamW lr 2e-4 with backbone lr x0.1 and weight decay 0.01. Cosine schedule with a 2000-iteration linear warmup, i.e. 500 optimizer steps. Grad clip 35, GridMask and photometric distortion. The final epoch is used. R1 val was 36.64 at epoch 12 and plateaued at 40.5 to 41.7 over epochs 19 to 24. The older row's recipe is unknown.",
+   "Relative to upstream bevformer_small, our setup removes rather than adds components: single frame (queue_length 1, video_test_mode False), CAN bus off, ImageNet initialisation instead of the nuScenes-trained FCOS3D weights (load_from None), no velocity head (code_size 8) and cams_embeds off. None of these is shown to raise mAP, and their direction relative to the older row is unknown."
+  ]
+ },
+ "lenses": [
+  {
+   "lens": "provenance",
+   "result": {
+    "lens": "Provenance of every number: data, split, checkpoint and config for the BEVFormer-S (R1-trained) 7-class test mAPs on the 14 PCCR rigs",
+    "verdict": "ok",
+    "checks": [
+     {
+      "what": "Claimed numbers match the metric files",
+      "how": "prov/map7.py: computed the 7-class mAP from each test_on_<RIG>_test/pts_bbox/metrics_summary.json label_aps (mean of the 4 distance thresholds, then mean over 7 classes). Also recomputed every AP from the metrics_details.json precision curves (devkit calc_ap). Compared with the log-printed mAP and with the stored devkit cfg.",
+      "result": "All 14 rigs match the claim within 0.0005 (R1 34.536, R1-c6 32.788, R1-c10 34.227, R1-f 24.738, R1-r 33.103, R1-t 32.966, R2 23.359, R3 29.967, R4 35.158, R5 8.527, R6 18.305, R7 22.524, R8 17.660, R9 13.002). label_aps holds exactly the 7 classes, so mAP7 equals devkit mean_ap and the metrics_details recomputation. The log prints the same values (0.3454 ... 0.1300). Stored cfg: center_distance, dist_ths [0.5,1,2,4], class_range 50 for car/truck/bus and 40 for the rest, min_recall and min_precision 0.1.",
+      "ok": true
+     },
+     {
+      "what": "Each metrics_summary.json is reproducible from its results_nusc.json and that rig's GT",
+      "how": "prov/reeval.py: built PCCRBEVFormerDataset from the work-dir config with data_root and ann_file set to the rig. Ran _evaluate_single on a scratch symlink to the stored results_nusc.json, so outputs went to scratch only. Compared every numeric field with the stored summary.",
+      "result": "All 14 rigs: 94 numeric fields each, max |diff| = 0 (for example R1 mean_ap 0.345359, R5 0.085268, R9 0.130018). Mismatch control: R1-f results with the R1-f pkl but R1's data_root fails with KeyError 'e3731b85...', which is one of R1-f's scene tokens.",
+      "ok": true
+     },
+     {
+      "what": "data_root and ann_file the launcher used for each rig",
+      "how": "Read tools/bevformer_test_rigs.sh and bevformer/tools/test.py, checked git history and mtimes, and grepped logs/test_bevformer_small_pccr_R1.log.",
+      "result": "The launcher sets ROOT=../data/pccr/$RIG/, passes --cfg-options data.test.data_root=$ROOT data.test.ann_file=${ROOT}${RIG}_infos_test.pkl and uses OUT=test_on_${RIG}_test, all from one loop variable. The config is the single *.py in WORK_DIR. test.py merges cfg_options before build_dataset. The script last changed in commit 321c580 (2026-11-22 21:23), the git tree is clean, and the test started at 09:16 on 11-23. The log has 14 '[gen2e] <RIG>: latest.pth -> .../test_on_<RIG>_test' lines in the default rig order, plus matching 'Results writes to' lines. The log does NOT print the effective data_root or ann_file; the checks below establish them.",
+      "ok": true
+     },
+     {
+      "what": "Result tokens equal the rig's test-pkl tokens",
+      "how": "prov/rig_tokens.py: compared the key set of each results_nusc.json with the token set of data/pccr/<RIG>/<RIG>_infos_test.pkl.",
+      "result": "All 14 rigs: 1800 of 1800 tokens equal, 0 missing, 0 extra. Every sample has 300 boxes and every box's sample_token matches its key. The 14 files have 14 distinct sha1 hashes. All test pkls are metadata version v1.0-test.",
+      "ok": true
+     },
+     {
+      "what": "Do rigs share tokens, and can token checks tell rigs apart?",
+      "how": "prov/cross_rig.py and prov/tables.py: pairwise overlaps of sample, scene and camera sample_data tokens across the 14 test pkls, and each rig's v1.0-test scene.json and sample.json against every pkl.",
+      "result": "0 shared sample tokens, 0 shared scene tokens and 0 shared camera sample_data tokens for every pair of rigs. Each rig's v1.0-test table holds exactly its own 30 scenes and 1800 samples and 0 tokens of any other rig. Scene names are identical across rigs (test_01...), so PCCR re-renders the same scenes with fresh tokens. Tokens therefore identify the annotation file and GT tables, but not the images: image paths are relative to data_root with the same file names in every rig (samples/CAM_X/test_YY_NNNNNN.jpg), and R1-f, R1-r and R1-t use exactly R1's 8 camera names (R1-c6 uses a subset). The md5 of same-named images differs between rigs.",
+      "ok": true
+     },
+     {
+      "what": "Which images and how many cameras were fed per rig",
+      "how": "Camera sets from every info of each pkl. prov/test_inputs.py rebuilt the test dataset with the launcher's cfg-options. prov/cpu_infer.py re-ran epoch_24 on CPU with the work-dir config and launcher-equivalent data_root/ann_file: one sample per rig (index 1000; R5 index 0; R1 also index 1799; 15 samples). prov/compare.py compared the top-50 boxes with the stored results for the same token.",
+      "result": "Cameras per rig (pkl = image tensor fed): R1 8, R1-c6 6, R1-c10 10, R1-f 8, R1-r 8, R1-t 8, R2 6, R3 10, R4 8, R5 4, R6 9, R7 7, R8 6, R9 7. Files come from ../data/pccr/<RIG>/samples/... Every rig reproduces the stored predictions: max |dxyz| 0.5 to 8.2 cm, max |dscore| at most 0.0032, identical top-5 classes. Wrong-image controls (R1-f, R1-r or R1-t calibration with R1's images) differ by 11.6 / 19.1 / 17.9 m and 0.88 / 0.92 / 0.78 in score, with different top-5 classes. So each rig's stored predictions came from its own images, and the matches at indices 0, 1000 and 1799 cover both GPU ranks' result chunks.",
+      "ok": true
+     },
+     {
+      "what": "All rigs used the same, final checkpoint",
+      "how": "Read checkpoint.txt, grepped the test log, read the latest.pth symlink, loaded the checkpoint meta on CPU (prov/ckpt_meta.py), and ran an epoch_23 re-inference control.",
+      "result": "checkpoint.txt is .../epoch_24.pth for all 14 rigs. The log has 28 'load checkpoint ... latest.pth' lines (2 ranks x 14 rigs) and no other checkpoint. latest.pth points to epoch_24.pth (06:46). epoch_24 meta: epoch 24, iter 45360 = 24 x 1890, the last epoch. Training log: 'Saving checkpoint at 24 epochs' at 06:46:03, final val at 06:48:40. epoch_22 and epoch_23 meta show epochs 22 and 23. epoch_23 predictions deviate from the stored ones by 0.66 m / 0.035 (R5) and 0.20 m / 0.094 (R1-f), against 0.008 m / 0.0006 and 0.006 m / 0.0009 for epoch_24, so the stored results identify epoch_24. The only other test-split outputs under bevformer/ are the smoke run's (R5, R1-c10 in work_dirs/smoke_bevformer_small_pccr). No sign of choosing an epoch on test data.",
+      "ok": true
+     },
+     {
+      "what": "Work-dir config copy equals the repo config",
+      "how": "prov/cfg_compare.py: loaded both with mmcv Config and diffed the dicts recursively. Compared the config text embedded in the checkpoint meta. Checked mtimes and git.",
+      "result": "The raw diff is large only because the work-dir copy is mmcv's resolved dump. Semantically there are exactly 2 differences, both added by tools/train.py: gpu_ids=range(0,2) and work_dir. The epoch_24 meta config text equals the work-dir copy exactly (15795 chars). The repo config (mtime 20:34:54) and the plugin code predate the training start (20:42:44). git is clean, and no file under bevformer/projects or bevformer/tools changed after training started.",
+      "ok": true
+     },
+     {
+      "what": "Training used only R1 train, as claimed",
+      "how": "Training log and config; length of R1_infos_train.pkl; backbone-init log lines; sha256 of the init file.",
+      "result": "ann_file is ../data/pccr/R1/R1_infos_train.pkl. 1890 iterations/epoch x 2 GPUs x 1 sample = 3780 = len(R1 train pkl). Batch 8 = 2 GPUs x 1 x cumulative_iters 4. Single frame: queue_length 1, video_test_mode False. Init is ckpts/resnet101_msra-6cc46731.pth (sha256 starts 6cc46731) with load_from None; the only missing keys are the 52 DCN conv_offset weights and biases.",
+      "ok": true
+     },
+     {
+      "what": "Per-epoch evaluation used R1 val, not test",
+      "how": "Grepped the training log and stdout; compared the eval hook's final results_nusc.json with the split pkls.",
+      "result": "24 'Epoch(val) [k][510]' lines, and the eval progress counts /1020 (510 x 2 GPUs = len(R1 val) = 1020; test has 1800). Results went to bevformer/val/work_dirs/bevformer_small_pccr/R1/...; the final file has 1020 tokens, equal to the R1 val pkl, with 0 shared with test and 0 with train.",
+      "ok": true
+     },
+     {
+      "what": "R1 train/val/test/mini do not overlap",
+      "how": "prov/r1_splits.py over tokens, scene tokens, scene names and image basenames, plus CARLA map per scene from log.json.",
+      "result": "train 3780 samples / 63 scenes, val 1020 / 17, test 1800 / 30, mini 300 / 5. Every pair shares 0 tokens, 0 scene tokens, 0 scene names and 0 image names. Maps: train Town01/02/04/05/10HD, val Town01/10HD, test Town03/06/07, so the test towns never appear in training.",
+      "ok": true
+     },
+     {
+      "what": "Timestamps: no stale metric files",
+      "how": "Full-iso mtimes of every test output; per-rig init timestamps from the test log; find for files not newer than epoch_24.pth; location of the smoke run's outputs.",
+      "result": "Strictly sequential in rig order, all after epoch_24.pth (06:46:04). For example R1: init 09:16:16, results 09:20:19, summary 09:20:54, checkpoint.txt 09:20:57; R5: 09:59:52, 10:02:42, 10:03:22, 10:03:29; R9: 10:18:00, 10:21:40, 10:22:19, 10:22:21. No file under test_on_* is older than epoch_24.pth, and the plots dirs are empty. The Nov-22 smoke run wrote to work_dirs/smoke_bevformer_small_pccr/R1.",
+      "ok": true
+     },
+     {
+      "what": "Data unchanged since download, and test inputs carry no GT",
+      "how": "ctimes of the pkls and tables; .pccr_done sha256 against tools/pccr_sha256.txt; keys of the launcher-equivalent test sample; tools/check_pccr_eval_copy.py.",
+      "result": "All pkl and table ctimes are 2026-11-21 23:22 to 2026-11-22 00:16 (extraction), and nothing in /data2/PCCR is newer than the training start. All 14 zip hashes are listed in tools/pccr_sha256.txt (revision 18edf4f). Test sample keys are only img and img_metas; img_metas has no GT or ego pose and can_bus is all zeros. The eval-copy check reports 'all checks passed'.",
+      "ok": true
+     },
+     {
+      "what": "BEVDepth comparison numbers",
+      "how": "7-class mAP from bevdepth/work_dirs/bevdepth-r50-pccr/R1/test_on_<RIG>_test/metrics_summary.json.",
+      "result": "R1 30.430, R1-f 0.158, R2 0.142, R5 0.000, all from epoch_24.pth. These match the quoted 30.4 / 0.2 / 0.1 / 0.0.",
+      "ok": true
+     }
+    ],
+    "issues": [
+     {
+      "title": "The test log does not record the effective data_root/ann_file per rig",
+      "evidence": "logs/test_bevformer_small_pccr_R1.log only has '[gen2e] <RIG>: latest.pth -> <OUT>' and 'Results writes to'. The cfg-options are not echoed and test.py does not dump the config, so per-rig data provenance had to be rebuilt from the launcher source, token checks, the GT-table KeyError mechanism and CPU re-inference.",
+      "severity": "low",
+      "affects": "Auditability of these and future runs. Not the claimed numbers, which were verified independently."
+     },
+     {
+      "title": "A wrong data_root would load another rig's images silently; only the evaluation's table lookup would catch it",
+      "evidence": "Image paths are relative to data_root with identical file names in every rig, and R1-f, R1-r and R1-t share R1's camera names. With R1's images, R1-f/r/t predictions still come out plausible (control runs). The only safeguard is that _get_eval_splits raises KeyError when the data_root tables lack the pkl's scene tokens (demonstrated). A run with format_only, or any evaluation that does not read data_root's tables, would have no safeguard.",
+      "severity": "low",
+      "affects": "Latent risk for future runs. Did not occur here: all 14 runs evaluated without error and the re-inference matched each rig's own images."
+     }
+    ],
+    "unchecked": [
+     "Only 15 of 25,200 test predictions were re-inferred on CPU (1 per rig, 2 for R1). The rest rest on file-level evidence: one process per rig, exact token equality, exact re-evaluation.",
+     "No full GPU re-run of the test (GPUs off-limits). CPU-vs-GPU differences up to 8.2 cm / 0.0032 score are assumed to be float noise; the epoch_23 control is 10 to 100 times larger.",
+     "Whether tools/pccr_sha256.txt itself matches PCCR's official published hashes (only the recorded download hashes were compared against it).",
+     "Correctness of the vehicle-fixed frame conversion, the class-range filtering and the devkit patch beyond reproducing the stored metrics; that is another lens. tools/check_pccr_eval_copy.py passes.",
+     "Why BEVFormer stays robust on FOV-changed rigs compared with BEVDepth. Provenance only shows R1-f predictions come from R1-f's own images and intrinsics (focal length 640 vs 1004.6)."
+    ],
+    "notes": "Verdict: no provenance problem found. Every claimed number traces back through four links, each checked with numbers above:\n- **Metric files:** the 14 numbers equal the metrics_summary.json values to 3 decimals.\n- **Results files:** each summary reproduces exactly from its results_nusc.json and that rig's own GT tables (94 numeric fields, max diff 0).\n- **Inputs:** each results file contains exactly that rig's 1800 test tokens, and the sampled predictions reproduce from epoch_24 plus that rig's own images and calibration. Feeding R1's images instead gives errors of 11 to 19 m.\n- **Training:** R1 train only, with disjoint val, test, scenes and towns; the config is the repo config; the single epoch-24 checkpoint was used for all rigs, and the test outputs were written strictly in rig order after it.\n\nThe high R1-f, R2 and R5 values against BEVDepth are therefore not caused by wrong data, wrong split, wrong checkpoint or stale files.\n\nNothing was written under /home/jeongtae/Gen2E or /data2: no files newer than the last test output, git clean, no new .pyc. All runs used CPU with CUDA hidden, and all my jobs have exited.\n\nThe scratch directory verify_bf/ is shared with parallel verifier agents (their files appeared from 10:27). I moved my work into /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/prov/. Before that I had written about 12 scripts at the top level of verify_bf/. If another agent used one of those names, I may have overwritten it; I saw no evidence of that.\n\nKey outputs:\n- Scripts, rig_summary.pkl and the epoch_23 control: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/prov/\n- CPU re-inference: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/infer/<PKL>__imgs_<ROOT>/results_nusc.json\n- Re-evaluation: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/reeval/<RIG>__gt_<ROOT>/\n- Logs: /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/infer_all.log and /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/reeval_all.log\n\nContext: val mAP 41.7 is higher than test mAP 34.5 for R1. That fits the split design: the val towns are training towns, while the test towns (Town03/06/07) are unseen."
+   },
+   "refutations": []
+  },
+  {
+   "lens": "metric-recompute",
+   "result": {
+    "lens": "Recompute the metric independently: re-derive the 7-class mAP from the stored metric files, re-evaluate the raw predictions both through the PCCR code path and with a from-scratch evaluator, check that the eval code is a verbatim copy, and check the class mapping.",
+    "verdict": "ok",
+    "checks": [
+     {
+      "what": "Step 1: 7-class mAP recomputed from each rig's metrics_summary.json and compared with the claim (tolerance 0.001)",
+      "how": "Own script step1_recompute.py, without tools/pccr_metric.py. For each class: mean of label_aps over 0.5/1/2/4 m, then mean over car, truck, bus, bicycle, motorcycle, adult, child, times 100.",
+      "result": "R1 34.5359, R1-c6 32.7883, R1-c10 34.2275, R1-f 24.7380, R1-r 33.1029, R1-t 32.9657, R2 23.3595, R3 29.9671, R4 35.1583, R5 8.5268, R6 18.3050, R7 22.5238, R8 17.6599, R9 13.0018. Largest |mine - claim| is 0.00047 (R1-c10 and R2). Every file has exactly these 7 classes (no extra, none missing) and dist_ths [0.5,1,2,4]. Per-class means equal the stored mean_dist_aps to within 1.1e-16, and the result equals the stored mean_ap. ALL OK: True.",
+      "ok": true
+     },
+     {
+      "what": "Stored metric files match the test run (not stale)",
+      "how": "grep of logs/test_bevformer_small_pccr_R1.log; checkpoint.txt; file mtimes",
+      "result": "The log prints mAP 0.3454, 0.3279, 0.3423, 0.2474, 0.3310, 0.3297, 0.2336, 0.2997, 0.3516, 0.0853, 0.1830, 0.2252, 0.1766, 0.1300 in the order R1..R9, which matches the files. Each rig loads .../R1/latest.pth (a symlink to epoch_24.pth, created 06:46). checkpoint.txt says epoch_24.pth for all 14 rigs. Each metrics_summary.json was written 33-45 s after its results_nusc.json, all between 09:20 and 10:22 on Nov 23. No Traceback or Error in the log.",
+      "ok": true
+     },
+     {
+      "what": "Step 2: R1, R5, R6 re-evaluated from raw results_nusc.json through the PCCR evaluation path",
+      "how": "step2_reeval.py (CPU, gen2e-bevformer env, cwd bevformer/). Built PCCRBEVFormerDataset from projects/configs/gen2e/bevformer_small_pccr.py with data_root/ann_file for the rig, test_mode=True, pipeline=[]. Copied results_nusc.json into scratch/reeval/<RIG>/ and called ds._evaluate_single(copy), so outputs go to scratch.",
+      "result": "_evaluate_single resolves to projects.mmdet3d_plugin.datasets.pccr_eval.PCCREvalMixin. MRO is PCCRBEVFormerDataset > PCCREvalMixin > CustomNuScenesDataset, so CustomNuScenesDataset's own _evaluate_single is shadowed. Dataset: version v1.0-test, 1800 infos. Eval config: 7 class_names; ranges car/truck/bus 50, the rest 40; dist_ths [0.5,1,2,4]; min recall and min precision 0.1. Copies are sha256-identical (R1 b8f44f9d.., R5 a8539e51.., R6 bf11d07b..). Max per-class, per-threshold |AP diff| vs stored is 0.00e+00 for all three. Recomputed mAP is 34.5359 / 8.5268 / 18.3050, equal to stored. NDS identical (0.331971 / 0.175870 / 0.236427), tp_errors equal, and metrics_details.json content identical. Runtime about 46-51 s per rig.",
+      "ok": true
+     },
+     {
+      "what": "From-scratch evaluator (no nuScenes devkit, mmdet3d or PCCR patch) on all 14 rigs",
+      "how": "indep_ap.py. GT comes from the rig's v1.0-test json tables, limited to the test pkl tokens. Range is measured in xy from the ego pose of the LIDAR_TOP keyframe. GT with num_lidar_pts + num_radar_pts == 0 is dropped. Matching is greedy by descending score with strict < threshold; precision is interpolated at 101 points, the first 11 bins are clipped and 0.1 is subtracted.",
+      "result": "For all 14 rigs, max per-entry |AP diff| vs stored metrics_summary is 0.00e+00, and the independent mAP7 equals stored for every rig (R1 34.5359 ... R9 13.0018).",
+      "ok": true
+     },
+     {
+      "what": "Same independent evaluator on the BEVDepth comparison row",
+      "how": "indep_ap2.py on bevdepth/work_dirs/bevdepth-r50-pccr/R1/test_on_<RIG>_test/results_nusc.json",
+      "result": "R1 30.4300, R1-f 0.1575, R2 0.1424, R5 0.0000, R6 6.2461, all equal to stored (|diff| 0). Both rows are scored by the same metric and the same GT, so the BEVFormer-vs-BEVDepth gap is not an evaluation artifact. The devkit eval code is identical in the two envs (1.1.9 vs 1.1.10): diff -r of eval/detection, eval/common, nuscenes.py, utils/data_classes.py and geometry_utils.py is empty.",
+      "ok": true
+     },
+     {
+      "what": "Sensitivity to the order of tied scores",
+      "how": "Counted tied scores in R1. indep_ap_flip.py repeats the evaluation with the tie order reversed.",
+      "result": "0.60-1.79% of R1 predictions share a score within their class. Reversing the tie order changes R1 from 34.5359 to 34.5361 (largest per-entry change 6.2e-5). R5 and R6 are unchanged at 4 decimals.",
+      "ok": true
+     },
+     {
+      "what": "Step 3: evaluation code is still a verbatim copy of PCCR's",
+      "how": "python3 -I tools/check_pccr_eval_copy.py; git log/status of the vendored source",
+      "result": "All 14 members (CLASSES ... _evaluate_single) report 'ok', then 'all checks passed', exit 0. The source third_party/pccr/models/BEVDet/pccr_dataset.py was last committed in d87eefc 'Vendor upstream snapshots (unmodified)'. git status shows no uncommitted changes in that file, the plugin datasets, the tools or the gen2e configs.",
+      "ok": true
+     },
+     {
+      "what": "Step 4: class mapping, prediction counts and GT counts for R1",
+      "how": "Detection names counted in results_nusc.json for all rigs. step4_devkit_counts.py counts boxes inside the patched devkit path (load_gt, then NuScenesEval after filtering), compared with the independent counts.",
+      "result": "results_nusc.json holds only the 7 classes for all 14 rigs. R1 predictions: car 138016, truck 64642, bus 37593, bicycle 98224, motorcycle 86798, adult 75236, child 39491 (= 1800 x 300). The R1 test tables have 9 categories, including traffic_light 8061 and traffic_sign 6265; _map_category_to_detection_name sends both to None. Devkit GT before filtering: car 11865, truck 3052, bus 1817, bicycle 1422, motorcycle 1412, adult 9901, child 2658, with no sign or light boxes. These equal the pkl gt_names counts. After the range+points filter: 6771/1652/947/610/605/4778/1153, identical to my independent counts. Predictions after the range filter: 113923/51581/30745/65315/53274/49488/26069, identical. cfg.class_names has the 7 classes. Evaluated samples equal the test pkl tokens.",
+      "ok": true
+     },
+     {
+      "what": "No label offset or permutation (box sizes per class)",
+      "how": "Median w,l,h of predictions with score > 0.3 compared with in-range GT, per class",
+      "result": "R1 prediction vs GT medians: car 1.98/4.67/1.55 vs 1.91/4.67/1.54; truck 2.57/6.43/2.56 vs 2.63/6.27/2.47; bus 2.28/6.43/2.63 vs 2.07/5.92/2.56; bicycle 0.66/1.64/1.65 vs 0.66/1.66/1.62; motorcycle 0.81/2.09/1.54 vs 0.87/2.04/1.59; adult 0.37/0.37/1.88 vs 0.38/0.38/1.86; child 0.44/0.43/1.20 vs 0.50/0.50/1.10. R5 and R6 are similar.",
+      "ok": true
+     },
+     {
+      "what": "Each rig's predictions are evaluated against that rig's GT",
+      "how": "Token sets from the 14 test pkls, results files and tables",
+      "result": "Each rig has 1800 test tokens and the largest pairwise token overlap between rigs is 0. Each results file has exactly its rig's 1800 tokens (0 extra, 0 missing, 300 boxes per sample). Each rig's test tables hold 1800 samples, all present in the pkl. So every results file was written from its own rig's info file and is scored on that rig's GT.",
+      "ok": true
+     },
+     {
+      "what": "Predictions are not copies of GT",
+      "how": "In indep_ap.py: count in-range predictions within 1 cm and 5 cm of a same-class GT centre; median TP centre error at 2 m",
+      "result": "Within 1 cm: R1 14/390395, R5 1/407369, R6 3/387761, at most 14 for any rig. Median TP centre error in R1: 0.46-1.01 m per class; in R5: 0.54-1.14 m.",
+      "ok": true
+     },
+     {
+      "what": "The config used for re-evaluation is the one used at test time",
+      "how": "step_cfgdiff.py: recursive comparison of the mmcv Config dicts for the repo config and the work-dir copy",
+      "result": "Only 2 differences, both runtime fields (gpu_ids, work_dir). Work-dir data.test: PCCRBEVFormerDataset, 7 classes, class_range 50/40, ref2ego [-0.46,0,1.86]. num_classes 7, max_num 300.",
+      "ok": true
+     },
+     {
+      "what": "Nothing in the repo or data was modified",
+      "how": "find -newer on my first scratch file over bevformer/projects, bevformer/tools, tools, third_party, both work dirs and data/pccr, plus a search for new .pyc files (python run with -B, TMPDIR set to scratch)",
+      "result": "Empty list.",
+      "ok": true
+     }
+    ],
+    "issues": [
+     {
+      "title": "PCCR GT num_lidar_pts differs strongly between rigs on the same vehicle, so the devkit's zero-points filter keeps different GT sets per rig (a protocol property, not an error in the claim)",
+      "evidence": "R1 and R1-c10 have identical LIDAR_TOP calibration ([-0.46,0,1.86], identity rotation). gt_rig_diff2.py matches objects by scene name, sample index, class and xy within 0.2 m (the first output line still says '(scene name, timestamp)'; that label is stale). 46369 objects match, and 30725 of them have different num_lidar_pts. Adults with points in R1 but 0 in R1-c10: 6025; with points in both: 2319. After filtering, adult GT is R1 4778 vs R1-c10 1982, R1-r 1983, R1-t 2005; child GT is 1153 vs 380/376/380. I re-ran my evaluator without the points filter (indep_ap_nopts.py): R1 32.83, R1-c6 31.03, R1-c10 32.78, R1-f 22.93, R1-r 30.83, R1-t 31.94 (official: 34.54/32.79/34.23/24.74/33.10/32.97). The gap to R1 moves by at most 0.68 points (R1-c10 -0.31 to -0.05; R1-r -1.43 to -2.00; R1-t -1.57 to -0.89; R1-c6 -1.75 to -1.80; R1-f -9.80 to -9.90). So this does not create the strong cross-rig numbers. It is the official PCCR GT plus the official devkit filter, and it applies to BEVDepth and every other row in the same way.",
+      "severity": "low",
+      "affects": "Reading the cross-rig gaps (mainly R1-c10, R1-r, R1-t, R1-c6) within any PCCR row. The claimed BEVFormer values and the comparison with BEVDepth are unaffected."
+     }
+    ],
+    "unchecked": [
+     "Whether the vendored third_party/pccr snapshot equals the real upstream PCCR repo at commit 6798206. No network fetch; I relied on the vendoring commit message 'unmodified' and a clean git status.",
+     "Whether the predictions in results_nusc.json came from the correct rig's images and calibration, and whether the ref->ego->global frame conversion is right. Checked only at the token level and by plausibility (sizes, centre errors); other lenses cover inference and frame.",
+     "Train/test split leakage between the training pkl and the test scenes: not checked.",
+     "Contents of the checkpoint (that epoch_24.pth really holds the epoch-24 weights): only the latest.pth symlink, checkpoint.txt and the test log were checked.",
+     "The claimed training setup (R101 ImageNet init, 1280x720, 24 epochs, batch 8): checked only that the repo config and the work-dir copy are identical, not the training run itself.",
+     "Why num_lidar_pts differs between same-vehicle rigs in the PCCR tables.",
+     "BEVDepth rigs other than R1, R1-f, R2, R5, R6 were not recomputed independently.",
+     "The older BEVFormer-S row from unknown code cannot be checked."
+    ],
+    "notes": "Within this lens the claim holds exactly. All 14 claimed values match the stored metrics (largest difference 0.00047). Running the stored raw predictions through the PCCR evaluation path (R1, R5, R6), and through my own from-scratch evaluator that bypasses the devkit and the PCCR patch (all 14 rigs), gives bit-identical per-class, per-threshold APs. The same evaluator also reproduces the BEVDepth row, so both rows are scored the same way. Only the 7 classes are counted: traffic_sign and traffic_light map to None and are absent from the devkit GT. There is no label offset. Tied scores have no effect at 4 decimals in R5/R6 (2e-4 in R1). The only finding is a dataset-protocol quirk (num_lidar_pts differs between same-vehicle rigs, which changes the GT set after filtering); it changes rig-vs-R1 gaps by at most about 0.7 points and does not inflate the claimed numbers. Scratch files, all under /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/: scripts step1_recompute.py, step2_reeval.py, indep_ap.py, indep_ap2.py, indep_ap_flip.py, indep_ap_nopts.py, step4_devkit_counts.py, step4_tokens.py, step_cfgdiff.py, gt_rig_diff2.py; logs reeval_R1.log, reeval_R5.log, reeval_R6.log, indep_<RIG>.log, indep_bevdepth_<RIG>.log, indep_flip_<RIG>.log, indep_nopts_<RIG>.log, devkit_counts_R1.log; re-evaluation outputs in reeval/R1, reeval/R5, reeval/R6. The same scratch dir also holds files from other verifier agents (for example indep_eval.py, map7.py, gtleak/); those are not mine and I did not use them."
+   },
+   "refutations": []
+  },
+  {
+   "lens": "leakage-sanity",
+   "result": {
+    "lens": "Could the BEVFormer-S test predictions be using ground truth, or be implausible? (test-time inputs, prediction-vs-GT statistics on R1/R5/R9 vs vanilla BEVDepth, TP-error plausibility, R1 val curve)",
+    "verdict": "ok",
+    "checks": [
+     {
+      "what": "Does anything derived from GT reach the model at test time (pipeline, img_metas, ann_info, points)?",
+      "how": "Read the test_pipeline in the work-dir config copy, PCCRBEVFormerDataset.get_data_info, CustomCollect3D meta_keys and BEVFormer.forward_test/simple_test/get_bboxes. Grepped the model code for sample_idx, pts_filename, scene_token, ann_info, gt_bboxes_3d and ego2global. Built the R1 test dataset from bevformer/work_dirs/bevformer_small_pccr/R1/bevformer_small_pccr.py with test_mode=True (as tools/test.py:169 does) and inspected ds[0] and ds[777] on CPU (scratch script verify_bf/check_pipeline.py).",
+      "result": "The data dict holds only ['img','img_metas']. img_metas keys: box_mode_3d, box_type_3d, can_bus, filename, flip, img_norm_cfg, img_shape, lidar2cam, lidar2img, next_idx, ori_shape, pad_shape, pcd_horizontal_flip, pcd_scale_factor, pcd_vertical_flip, prev_idx, pts_filename, sample_idx, scale_factor, scene_token. 'ann_info' is absent from get_data_info and no points are loaded. img is (8,3,736,1280). In the model code, GT appears only in forward_train and the loss. scene_token is used only to reset prev_bev, and get_bboxes uses only box_type_3d.",
+      "ok": true
+     },
+     {
+      "what": "Are CAN bus and the temporal path really off in the executed code?",
+      "how": "Printed the work-dir config values. Read get_data_info, BEVFormer.forward_test, PerceptionTransformer.get_bev_features, BEVFormerEncoder.forward, CustomNuScenesDataset.prepare_train_data/union2one and forward_train. Checked img_metas['can_bus'] on real samples.",
+      "result": "Config: video_test_mode=False, use_can_bus=False, queue_length=1. can_bus is np.zeros(18) on samples 0 and 777, and the ego-pose write from upstream is removed. forward_test forces prev_bev=None when video_test_mode is False. get_bev_features adds can_bus_mlp(can_bus)*use_can_bus (=0), and the shift computed from can_bus[0:2]=0 is 0. With prev_bev=None the encoder stacks ref_2d with itself. In training, queue_length=1 gives index_list=[index], len_queue=1 gives prev_bev=None (Gen2E patch), and union2one sets prev_bev_exists=False.",
+      "ok": true
+     },
+     {
+      "what": "Was training limited to the R1 train split (no val/test or overlapping data)?",
+      "how": "Read the train ann_file in the work-dir config. Counted iterations per epoch in 20261122_204244.log. Compared scene names, sample tokens and camera image paths (also realpath) across R1 train/val/test pkls.",
+      "result": "ann_file is R1_infos_train.pkl. Training ran 'Epoch [..][x/1890]' on gpu_ids range(0,2): 1890x2 = 3780 = len(R1 train). Val ran 510x2 = 1020 = len(R1 val). Overlaps: scene names 63/17/30 with 0 shared; sample tokens 0 shared; image paths 30240/8160/14400 with 0 shared, also 0 after realpath. Test rigs R5 and R9 use the same scene names as R1 test and none from R1 train.",
+      "ok": true
+     },
+     {
+      "what": "Are the stored metric files consistent with the result files and the claim (stale/mismatched)?",
+      "how": "Re-ran the PCCR evaluation (dataset._patched_nuscenes_eval + NuScenesEval.evaluate, scratch verify_bf/gtleak/eval_only.py) on each results_nusc.json for R1, R5 and R9, both models, and compared with metrics_summary.json. Also checked the test-log mAP lines, checkpoint.txt and md5s.",
+      "result": "Recomputed BEVFormer 7-class mAP: R1 34.536, R5 8.527, R9 13.002. BEVDepth: 30.430, 0.000, 4.109. Against the stored files, max|dAP|=0 and max|dTPerr|=0 in every case. All 14 BEVFormer metrics_summary files give exactly the claimed values (R1 34.536 ... R9 13.002). The test log prints mAP 0.3454 ... 0.1300 for the 14 rigs. All 14 checkpoint.txt files point to epoch_24.pth. The 14 results_nusc.json files have 14 distinct md5s.",
+      "ok": true
+     },
+     {
+      "what": "Leakage signature: distance from each high-score prediction (score>0.3) to the nearest same-class GT (BEV centre distance, the metric's own filtered GT and predictions)",
+      "how": "Scratch script verify_bf/analyze_rig.py loads GT and predictions exactly as the PCCR eval does (rig devkit tables, class ranges, zero-point and bike-rack filters). For every prediction it computes nearest same-class GT distance, max|dsize| and |dyaw|, for BEVFormer and BEVDepth on R1, R5 and R9 (plus R1-f and R2).",
+      "result": "BEVFormer: R1 n=13363, <1cm 0.082% (11), <5cm 1.27%, <0.5m 33.1%, <1m 52.7%, <2m 70.9%, median 0.86 m, smallest 4.11 mm. R5 n=9996, <1cm 0 (smallest 13.9 mm), <1m 23.8%, median 3.44 m. R9 n=12737, <1cm 0.024% (3), <1m 26.0%, median 2.12 m. BEVDepth: R1 n=24179, <1cm 0.045% (11), <1m 51.1%, median 0.92 m, smallest 3.97 mm. R5 <1cm 0, median 11.07 m. R9 <1cm 0.009% (2), median 3.11 m. Predictions within both 1 cm in centre and 1 mm in size: 0 for every rig and model. Counts below 1 cm match an r^2 extrapolation from below 5 cm (R1 BEVFormer 11 vs 6.8 expected, BEVDepth 11 vs 7.2), so there is no spike at zero. GT coverage (same-class prediction with score>0.3 within 2 m): R1 0.565 (BEVFormer) vs 0.566 (BEVDepth), R5 0.226 vs 0.010, R9 0.336 vs 0.255. Within 1 cm: at most 0.067%.",
+      "ok": true
+     },
+     {
+      "what": "Predictions per sample and score histograms",
+      "how": "From results_nusc.json (raw) and after the eval's range filter (analyze_rig.py).",
+      "result": "BEVFormer gives exactly 300 boxes for every one of the 1800 samples on R1, R5 and R9 (max_num=300). After the class-range filter R1 has min 83 / mean 216.9 / max 279. Score>0.3 per sample averages 7.42 (R1), 5.55 (R5), 7.08 (R9), against 9.18/9.21/9.39 filtered GT per sample. BEVDepth raw per sample: R1 0/62.3/392, R5 0/65.5/485, R9 1/85.6/372; score>0.3 averages 13.43/6.39/12.26. R1 filtered score histogram, BEVFormer: [0-.05] 347123, [.05-.1] 18178, [.1-.2] 8609, [.2-.3] 3122, [.3-.4] 1636, [.4-.5] 1068, [.5-.6] 772, [.6-.7] 776, [.7-.8] 1073, [.8-.9] 2943, [.9-1] 5095. This is bimodal, as is typical of a focal-loss DETR head. BEVDepth: nothing below 0.1, [.1-.2] 45922 ... [.8-.9] 383, nothing at or above 0.9.",
+      "ok": true
+     },
+     {
+      "what": "TP errors for all 14 rigs: plausible for a camera-only detector?",
+      "how": "Read label_tp_errors and tp_errors from every metrics_summary.json for BEVFormer and BEVDepth.",
+      "result": "BEVFormer over the 14 rigs: car ATE 0.617-1.056 m (R1 0.649), car ASE 0.180-0.235 (R1 0.186), mATE 0.598-0.900, mASE 0.166-0.240, mAOE 1.024-1.267, car AOE 0.744-1.070. BEVDepth R1: car ATE 0.565, ASE 0.221, AOE 0.690, mATE 0.645, mASE 0.193, mAOE 1.311. No error is unrealistically low. Adult ASE is very low (BEVFormer 0.058, BEVDepth 0.032) because every adult GT box in R1 test has the same size, 0.375x0.375x1.86 (1 distinct size in 9901 boxes).",
+      "ok": true
+     },
+     {
+      "what": "Is the high AOE a yaw/size convention error in the BEVFormer chain?",
+      "how": "Ran a GT-as-prediction round trip with distinct random scores (uniform 0.05-1, seed 0), to avoid the equal-score devkit artifact: get_ann_info (the training targets in the vehicle-fixed frame) -> _format_bbox -> PCCR eval, on R1, R5 and R9 (scratch verify_bf/gtleak/gt_roundtrip.py + eval_only.py). Also histogrammed |dyaw| of matched predictions (score>0.3, within 2 m) in 8 bins over 0..pi.",
+      "result": "Round trip with 27505/27563/30862 boxes: mAP7 100.000 on all three rigs, mATE 0.0000, mASE 0.0000, mAOE 0.0008/0.0005/0.0007 (worst class adult 0.0055). R9, a different vehicle with a different LiDAR mount, behaves the same. BEVFormer R1 car |dyaw| histogram [2422,334,170,279,149,144,134,656] peaks at 0 with a secondary peak at pi (front/back flips), not at pi/2. Adult [846,116,95,383,294,76,156,753] fits the square, constant-size adult box.",
+      "ok": true
+     },
+     {
+      "what": "Is the R1 val curve plausible, and is final val consistent with test R1 34.5?",
+      "how": "Parsed all 24 val entries and the train losses in 20261122_204244.log.json and recomputed the 7-class mean from per-class APs. Compared with the BEVDepth log and with per-class test AP.",
+      "result": "Val mAP7 by epoch: 1.34, 16.46, 22.52, 25.11, 28.69, 31.35, 32.71, 34.94, 36.85, 36.75, 35.54, 36.64, 38.06, 39.43, 37.92, 39.78, 38.89, 39.97, 40.49, 40.59, 40.92, 41.60, 41.48, 41.67. The recomputed means equal the logged mAP. The curve rises with small dips and plateaus as the cosine LR goes to 0. Mean train loss falls monotonically from 15.24 to 3.55. Final val 41.67 is above test 34.54, the opposite direction to test leakage. The gap depends on class (val/test: car 48.8/40.2, truck 39.6/39.4, bus 36.3/24.2, bicycle 44.9/49.9, motorcycle 52.2/39.0, adult 48.4/39.1, child 21.5/9.8). BEVDepth also scores higher on val than test (ep24 val 33.48 vs test 30.43).",
+      "ok": true
+     },
+     {
+      "what": "Plausibility of the gain over BEVDepth and of the FOV robustness",
+      "how": "Compared per-class AP on all rigs. Ran the distance analysis on R1-f and R2. Re-evaluated BEVFormer with boxes scoring below 0.1 removed, matching BEVDepth's score floor.",
+      "result": "R1 per-class AP, BEVFormer vs BEVDepth: car 40.2/43.0, truck 39.4/37.8, bus 24.2/27.9, bicycle 49.9/38.7, motorcycle 39.0/35.8, adult 39.1/27.5, child 9.8/2.4. The gain is concentrated in small classes, consistent with the 1280x720 vs 384x704 input. Leakage would raise every class. On R1-f/R2, BEVFormer's score>0.3 predictions sit a median 1.07/1.25 m from the nearest GT with 2 m GT coverage 0.426/0.418: a degraded but real detector. BEVDepth's sit 6.48/5.85 m away with coverage 0.061/0.043, i.e. unrelated to GT, matching its collapse. BEVFormer with scores below 0.1 removed: R1 33.228, R5 8.097, R9 12.258 (vs 34.536/8.527/13.002), still above BEVDepth R1 30.43.",
+      "ok": true
+     },
+     {
+      "what": "Do the camera images contain anything GT-derived (overlays)?",
+      "how": "Viewed /data2/PCCR/R1/samples/CAM_BUMPER_FRONT/test_01_000001.jpg",
+      "result": "A plain CARLA rainy street image with no drawn boxes or overlays. This is one image only.",
+      "ok": true
+     }
+    ],
+    "issues": [
+     {
+      "title": "Different score cut-offs between the compared rows: BEVFormer keeps all 300 boxes per sample, BEVDepth drops boxes scoring below 0.1",
+      "evidence": "BEVFormer's results files hold 300 boxes per sample with scores down to about 0 (347123 of 390395 range-filtered R1 boxes score below 0.05). BEVDepth's files contain nothing below 0.1. Re-evaluating BEVFormer with the same 0.1 cut-off gives R1 33.228 (-1.31), R5 8.097 (-0.43), R9 12.258 (-0.74). This is the standard output of each method, not an error, and the R1 ranking holds (33.2 vs BEVDepth 30.4).",
+      "severity": "low",
+      "affects": "Small part of the BEVFormer vs BEVDepth gap in the table (about 0.4-1.3 mAP points). The BEVFormer numbers themselves are correct."
+     },
+     {
+      "title": "Orientation errors are high (BEVFormer mAOE 1.02-1.27; adult/child AOE about 1.4-1.8), but this is not a convention error",
+      "evidence": "The GT round trip through BEVFormer's own conversion chain gives AOE ≤0.0055 on R1, R5 and R9, so the high AOE is the model's genuine error. Car |dyaw| peaks at 0, with about 15% front/back flips. Adult GT boxes are a constant square 0.375x0.375. BEVDepth is worse: R1 mAOE 1.311 and adult AOE 1.73, which exceeds pi/2. BEVDepth's matched adult |dyaw| histogram [846,939,1222,1395,1478,1482,1300,1193] is flat to biased towards pi/2-3pi/4. That may deserve a separate look on the BEVDepth side.",
+      "severity": "low",
+      "affects": "Only the NDS/AOE columns. The 7-class mAP (centre-distance AP) does not depend on orientation."
+     }
+    ],
+    "unchecked": [
+     "Model inference was not re-run. GPUs were off-limits and CPU inference of R101-DCN at 1280x720 was not attempted. That the results_nusc.json files come from epoch_24.pth rests on the test log ('load checkpoint ... latest.pth', 'Results writes to ...', matching mAP lines), checkpoint.txt and timestamps.",
+     "The epoch_24 R1 val mAP (41.67) was taken from log.json, not re-evaluated.",
+     "Prediction-vs-GT distance and score analysis covers only R1, R5 and R9 (plus R1-f and R2). For R1-c6, R1-c10, R1-r, R1-t, R3, R4, R6, R7 and R8 only the stored TP errors and APs were reviewed. Metric recomputation from results_nusc.json covers R1, R5 and R9 only.",
+     "Only one test image was inspected for overlays.",
+     "Whether PCCR's test scenes reuse town, actor or trajectory content from its train scenes (a benchmark design question). Only scene names, sample tokens and image paths were checked for overlap.",
+     "Per-rig camera geometry (lidar2img) was not checked under this lens. An error there would lower scores, not inflate them."
+    ],
+    "notes": "I found no evidence of GT leakage or implausible predictions. The predictions look like those of a genuine camera-only detector, and on R1 their localisation quality is close to vanilla BEVDepth's (median distance to nearest GT 0.86 m vs 0.92 m; 2 m GT coverage 0.565 vs 0.566). BEVFormer's higher mAP comes from small classes and higher precision, not from near-perfect boxes.\n\nMy first script (verify_bf/analyze_rig.py) printed 'recomputed mAP7 0.000' for every rig. That was a bug in my script, not in the repo: NuScenes DetectionMetrics.serialize() returns a defaultdict with float keys, so lookups with '0.5' returned 0. The corrected evaluation (verify_bf/gtleak/eval_only.py, which JSON round-trips the metrics) reproduces the stored files exactly. The distance statistics in analyze_rig.py do not use that dict and are unaffected.\n\nThe scratch directory /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/ is shared with other verifiers. My files are check_pipeline.py, analyze_rig.py, analyze_R1.log, analyze_R5.log, analyze_R9.log, the rig_R1, rig_R5, rig_R9, rig_R1-f and rig_R2 directories (summary.json and *_records.npz), and gtleak/ (gt_roundtrip.py, eval_only.py, filter_scores.py, roundtrip_*/results_nusc.json, eval*.log).\n\nAll Python ran CPU-only with CUDA_VISIBLE_DEVICES=\"\" and `python -I -B` (no .pyc written into the repo). Nothing under /home/jeongtae/Gen2E or /data2 was modified, and no external process was touched."
+   },
+   "refutations": []
+  },
+  {
+   "lens": "frame-geometry",
+   "result": {
+    "lens": "Vehicle-fixed reference frame (pccr_ref2ego = [-0.46, 0, 1.86]) and the evaluation chain on rigs with other vehicles (R4/R5/R8 audi.tt-type with LiDAR at [-0.22,0,1.5], R6 with LiDAR at [-0.36,0,4.8], R9 with LiDAR at [2.6,0,4.18]) and with changed cameras (R1-f etc.)",
+    "verdict": "ok",
+    "checks": [
+     {
+      "what": "eval-gt (tool, every GT-as-prediction box has score 1) on R6, R9 and R1-f test, plus R4 as an extra",
+      "how": "CUDA_VISIBLE_DEVICES=\"\" TMPDIR=<scratch>/tmp gen2e-bevformer python -I -B tools/check_bevformer_pccr.py eval-gt <RIG> test (logs: verify_bf/logs/evalgt_*.log)",
+      "result": "R6: mAP 1.0000, mATE 0.0000, mASE 0.0000, mAOE 0.0018, NDS 0.9680, PASS. R9: mAP 1.0000, mATE 0.0000, mASE 0.0000, mAOE 0.0001, NDS 0.9682, PASS. R1-f: mAP 1.0000, mATE 0.0000, mASE 0.0000, mAOE 0.0012, NDS 0.9681, PASS. R4 (extra): mAP 1.0000, mATE 0, mASE 0, mAOE 0.0011, PASS.",
+      "ok": true
+     },
+     {
+      "what": "Repeat of GT-as-prediction with distinct scores (avoids the devkit tie artifact), then a per-box comparison of the _format_bbox global output with devkit sample_annotation boxes",
+      "how": "verify_bf/gt_chain.py <RIG>: data.test config, every GT box gets a uniform random score in [0.05, 1], ds.evaluate, then each formatted box is matched to the nearest devkit annotation in 3D",
+      "result": "R6: mAP 1.000000, mATE 0.000000, mASE 0.000000, mAOE 0.000300. 31424 formatted boxes = 31424 devkit 7-class annotations with points. Global 3D center error including z: max 4.09e-06 m. Size error max 0. Yaw error median 1.3e-07 rad, p99 4.3e-04, 3 boxes above 0.05 rad (max 0.267, tilted annotations). R9: mAOE 0.000700, 30862 = 30862, center max 4.06e-06 m, 4 boxes above 0.05 rad. R1-f: mAOE 0.000800, 28585 = 28585, center max 4.06e-06 m.",
+      "ok": true
+     },
+     {
+      "what": "boxes check on R6 and R9 test (plus R4)",
+      "how": "check_bevformer_pccr.py boxes <RIG> test --samples 100",
+      "result": "R6: 2896 boxes in 100 samples, max center error 3.94e-06 m, max corner error 7.54e-06 m (0 devkit boxes tilted >10 deg), PASS. R9: 2903 boxes, 4.08e-06 / 7.96e-06 m (3 tilted), PASS. R4: 2612 boxes, 3.92e-06 / 7.54e-06 m, PASS.",
+      "ok": true
+     },
+     {
+      "what": "render R6 and R9 test index 0, inspected visually",
+      "how": "check_bevformer_pccr.py render R6|R9 test 0 verify_bf/render_<RIG>_test_0.jpg, then viewed the images and a 3x zoom crop (verify_bf/render_crops.jpg)",
+      "result": "R6: 20 boxes, 9 cameras. R9: 22 boxes, 7 cameras. Image 720 padded to 736 x 1280. In every camera that shows objects, the boxes sit on the cars and pedestrians: CAM_FRONT (fx 369.5), CAM_FRONT_TOP, mirror, fender, CAM_BACK and R9 CAM_BACK_TOP. The left cameras in frame 0 show no objects and draw no boxes.",
+      "ok": true
+     },
+     {
+      "what": "Camera geometry measured: our lidar2img (ref -> image) against the devkit's own projection (global -> camera ego pose -> calibrated_sensor -> K)",
+      "how": "verify_bf/proj_check.py and proj_check_flat.py on R6, R9 and R1-f, samples 0/600/1200/1799, every camera",
+      "result": "Box centers differ by at most 0.000 px for every camera (R6: 125 box-camera projections over all 9 cameras, including CAM_FENDER_BACK_LEFT n=21 and CAM_MIRROR_LEFT n=6; R9: 85 over 7 cameras; R1-f: 88). Corners differ by 0.00 px when the devkit box is reduced to yaw only in the ego frame; keeping its pitch/roll gives 18.4 px. Camera and LiDAR timestamps differ by 0 us.",
+      "ok": true
+     },
+     {
+      "what": "pccr_ref2ego is the same in train, val and test, and the test launcher keeps it",
+      "how": "verify_bf/cmp_cfg.py (resolved mmcv configs: repo vs work-dir copy); grep of the training log config dump; verify_bf/merge_test.py (simulates the launcher's --cfg-options merge)",
+      "result": "Repo config and work-dir copy differ only in gpu_ids and work_dir. data.train/val/test ref2ego_translation = [-0.46, 0.0, 1.86] in both, and the 20261122_204244.log dump shows the same for train/val/test. After the merge, R6/R9/R1-f point data_root and ann_file at their own rig and keep ref2ego [-0.46, 0, 1.86]. pccr_dataset.py (11-22 20:33) and the config (20:34) are older than training (20:42) and the tests (11-23 09:15-10:22); git status is clean.",
+      "ok": true
+     },
+     {
+      "what": "Every rig's ego -> ref translation is R1's LiDAR mount, and the ground sits at z = -1.86 in the ref frame for every vehicle",
+      "how": "verify_bf/l2e_all.py (lidar2ego for all rigs); verify_bf/ground_z.py (PCCRBEVFormerDataset.get_ann_info bottom heights, every 10th test sample, 180 samples)",
+      "result": "lidar2ego: R1 train/val/test and the etron rigs [-0.46,0,1.86]; R4/R5/R8 [-0.22,0,1.5]; R6 [-0.36,0,4.8]; R9 [2.6,0,4.18]. Rotation is identity for all. ds.ref2ego = [-0.46,0,1.86] for R6 and R9. Car bottom z median in the ref frame: R1 -1.857, R6 -1.857, R9 -1.858, R1-f -1.858. Trucks -1.859..-1.860, buses -1.859..-1.860. In the rig's own LIDAR_TOP frame it would be -4.797 (R6) and -4.178 (R9). ego2global z median -0.0037 m.",
+      "ok": true
+     },
+     {
+      "what": "Stored BEVFormer predictions use the same frame (converted global -> ego -> ref with the info ego pose)",
+      "how": "verify_bf/pred_frame.py on R1/R6/R9/R1-f results_nusc.json (every 6th sample); verify_bf/pred_ego_z.py for R4/R5/R8",
+      "result": "Car predictions with score > 0.3, bottom z in the ref frame, prediction vs GT: R1 -1.858 vs -1.859, R6 -1.851 vs -1.858, R9 -1.840 vs -1.857, R1-f -1.855 vs -1.857. Predictions matched to GT within 1 m have center dz median -0.006 / +0.000 / +0.003 / -0.011 m. In the ego frame, car bottoms on R4/R5/R8 are at +0.000 / +0.013 / +0.008 m.",
+      "ok": true
+     },
+     {
+      "what": "Each rig's results come from that rig's own data",
+      "how": "verify_bf/pred_frame.py and verify_bf/tokens.py",
+      "result": "For R1/R6/R9/R1-f, the result tokens are exactly the rig's 1800 test-info tokens, with 300 predictions per sample. Sample tokens are unique per rig: 0 of 1800 are shared with R1 for each of the 13 other rigs. A data_root/ann_file mix-up would therefore have broken the devkit lookup. Info image paths are relative and resolve against data_root.",
+      "ok": true
+     },
+     {
+      "what": "Independent recomputation of the 7-class mAP from the stored results_nusc.json for all 14 rigs (no PCCREvalMixin, no devkit evaluation code)",
+      "how": "verify_bf/indep_eval.py <RIG>: GT from the rig's devkit tables (7 classes, lidar+radar pts > 0, xy distance from the LIDAR_TOP ego pose < class range); my own greedy 2D center matching; AP with 101 recall points, min recall and min precision 0.1",
+      "result": "Matches the stored metrics_summary label_aps exactly (max |AP diff| 0.00e+00 over 7 classes x 4 thresholds) for every rig, and the claim: R1 34.536, R1-c6 32.788, R1-c10 34.227, R1-f 24.738, R1-r 33.103, R1-t 32.966, R2 23.359, R3 29.967, R4 35.158, R5 8.527, R6 18.305, R7 22.524, R8 17.660, R9 13.002.",
+      "ok": true
+     },
+     {
+      "what": "Eval-range and image-size consistency for other vehicles and cameras; no self-annotation of the ego vehicle",
+      "how": "verify_bf/imgsize.py; verify_bf/ego_self.py; verify_bf/scenes.py",
+      "result": "All 14 rigs use 1280x720 images with principal point (640,360). Valid GT within 3 m of the ego origin is only traffic_sign (3/2/3/3 boxes for R1/R4/R6/R9), so the ego truck is not annotated. R1/R4/R6/R9 test frames have identical ego poses (max diff 0.0000 m over 1800 frame keys). The class-range circle is therefore the same for every vehicle and sits inside the BEV grid (ego x -51.66..50.74 m).",
+      "ok": true
+     },
+     {
+      "what": "Split and town separation (side check)",
+      "how": "verify_bf/scenes.py (scene.json and log.json)",
+      "result": "R1 trainval: 80 scenes in Town01/02/04/05/10HD. R1/R6/R9 test: 30 scenes in Town03/06/07, so no town overlap.",
+      "ok": true
+     }
+    ],
+    "issues": [
+     {
+      "title": "Comparability caveat, not a correctness defect: the BEVFormer-S row uses a vehicle-fixed frame, while the PCCR baseline rows that sampled heights in each rig's own LiDAR frame did not",
+      "evidence": "For the five non-etron rigs, the rig's own LIDAR_TOP frame sits at these offsets in the ref frame: [+0.24,0,-0.36] for R4/R5/R8, [+0.10,0,+2.94] for R6 and [+3.06,0,+2.32] for R9 (lidar2ego minus ref2ego). The ground therefore stays at -1.86 instead of -4.80 (R6) or -4.18 (R9). docs/decisions.md (2026-11-22) records this choice on purpose: PETR and Fast-BEV in PCCR (LiDAR frame) scored 0.0 on R6/R9. On the etron rigs (R1, R1-c6/c10/f/r/t, R2, R3, R7) the ref frame equals LIDAR_TOP exactly, so it has no effect there. Our vanilla BEVDepth row is also anchored to the vehicle: its car predictions sit at the same ego height on R1/R4/R6/R9 (bottom about -0.79 m on every rig), so BEVFormer vs BEVDepth is frame-consistent. Only the dagger rows are not.",
+      "severity": "low",
+      "affects": "How R4, R5, R6, R8 and R9 compare with the PCCR dagger rows (PETR/Fast-BEV) and the older BEVFormer-S row. The table should state the frame. The size of the effect is unmeasured."
+     },
+     {
+      "title": "Aside on the comparison model only: BEVDepth's stored translation z is the box bottom, not the center",
+      "evidence": "verify_bf/bevdepth_z.py on R1 test, car predictions with score > 0.3: BEVDepth translation z in the ego frame has median -0.014 m (height 1.570); devkit GT has +0.770 m; BEVFormer has +0.766 m.",
+      "severity": "low",
+      "affects": "The BEVDepth row only, and only if a 3D-IoU or z metric were ever computed. nuScenes mAP and ATE use 2D center distance, so this cannot affect any reported mAP."
+     }
+    ],
+    "unchecked": [
+     "How much the vehicle-fixed frame helps R4/R5/R6/R8/R9 compared with each rig's own LiDAR frame. Measuring it needs inference with ref2ego=None (GPU), which was not run.",
+     "Model inference was not re-run (no GPU). That the stored results came from epoch_24 on each rig's own images is inferred from: the launcher code, the cfg-options merge simulation, the token match, checkpoint.txt (epoch_24.pth) and the log lines 'load checkpoint ... latest.pth'.",
+     "Visual render only for test index 0 on R6 and R9. The quantitative projection check covered 4 samples each for R6, R9 and R1-f.",
+     "The boxes check ran on 100 samples per rig (R6, R9, R4). The distinct-score global comparison covered all 1800 test samples, but only for R6, R9 and R1-f.",
+     "eval-gt and the boxes check were not run on R1-c6, R1-c10, R1-r, R1-t, R2, R3, R5, R7, R8. For those rigs only the stored-result recomputation (all 14 rigs) and the lidar2ego listing were done.",
+     "Leakage, the training recipe, checkpoint choice and the older BEVFormer-S row are outside this lens."
+    ],
+    "notes": "Under this lens the BEVFormer-S numbers hold. The vehicle-fixed frame is applied the same way in the train, val and test configs and survives the launcher's per-rig override. Every vehicle puts its ground at z = -1.86 in the ref frame (car bottom median -1.857 on R6 and -1.858 on R9). Cameras project exactly like the devkit, with a 0.000 px center difference on every R6, R9 and R1-f camera. The output chain ref -> ego -> global reproduces devkit boxes to about 4e-6 m, z included, with the same counts (31424/31424 on R6). The stored predictions on R6 and R9 sit at the right height (car bottom -1.851 and -1.840 vs GT -1.858 and -1.857). An evaluator written independently of PCCREvalMixin reproduces all 14 claimed mAPs exactly from the stored results_nusc.json files. Dataset structure worth knowing: the 14 rigs' test splits replay the same 30 Town03/06/07 scenes with identical ego poses, while sample tokens are unique per rig. Housekeeping: all runs were CPU-only (CUDA_VISIBLE_DEVICES=\"\"), with python -I -B so no .pyc files were written and TMPDIR set to the scratch dir. Nothing under the repo or /data2 was written. My read-only 'git status' left .git/index untouched (its mtime is still 10:13:19 from the user's commit), but it changed the .git directory's mtime (10:42), probably through a transient index.lock. Scripts, logs and images are in /tmp/claude-1014/-home-jeongtae-Gen2E/5b474927-4870-4d96-bcf6-e7208a6b2a3f/scratchpad/verify_bf/ (renders: render_R6_test_0.jpg, render_R9_test_0.jpg, render_crops.jpg; logs/)."
+   },
+   "refutations": []
+  }
+ ]
+}

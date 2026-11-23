@@ -91,6 +91,15 @@
   - GPU 스모크와 2-GPU 1 epoch mini 학습(평가 포함)이 통과했어요.
 - **장부:** UDGA 부분을 PD-BEV와 같은 형식(위치·문제·발견·재확인·재구현·커밋·체크 전/후)으로 채웠어요. PD-BEV 체크 표에서 칸이 밀린 PDBEV-9 행도 고쳤어요.
 
+- **BEVFormer-S 결과:** 7-class mAP가 R1 34.5, OOD 평균 25.1, 하락률 27.3%예요. 화각이 바뀐 리그에서도 거의 무너지지 않아요(R1-f 24.7, R2 23.4). 행 전체와 검증 내용은 [results.md](results.md)에 있어요.
+- **BEVFormer-S 독립 검증 워크플로:** 기존 표 행(R1 21.1)과 차이가 커서 돌렸어요. 관점은 넷이에요: 출처(리그 데이터·체크포인트·split), mAP 재계산, 누수·정상성, 좌표계. 에이전트 5개가 37분 동안 CPU로 확인했어요. 판정은 "값은 신뢰 가능, 비교 시 주의점 있음"이에요. 원자료는 `docs/analysis/2026-11-23/verify_bevformer_row.json`이에요.
+  - 주의점: 점수 하한 차이(BEVFormer는 하한 없음, BEVDepth는 0.1; 맞추면 R1 −1.3), 다른 차량 리그 5개에서 †행과 좌표계가 다름, 학습 1회예요.
+  - 검증이 지적한 재현성 공백을 메웠어요. 평가 스크립트가 리그별 data_root와 ann_file을 로그와 `data.txt`에 남겨요(커밋 `54e83fa`).
+- **UDGA depth 붕괴 관찰:** epoch 6에서 `loss_overlap`이 0.27에서 0.012로 떨어졌어요. epoch 4 체크포인트로 R1 val 이미지의 depth 분포를 CPU에서 재 보니 거의 균일했어요.
+  - UDGA: 최대 확률 0.022(균일 0.011), 엔트로피 4.45(균일 4.49), logit 크기 0.12예요.
+  - vanilla: 최대 확률 0.47, 엔트로피 1.8, logit 크기 3.9예요(같은 epoch 4).
+  - L_ov는 모든 logit이 같으면 0이 되는데, LiDAR depth도 없고 L_p 그래디언트도 없으니 모델이 그쪽으로 가요. 그래도 val mAP는 LiDAR depth가 없는 PD-BEV-A와 비슷하게 올라요(epoch 6: 12.3 vs 13.4). 어떻게 할지 사용자에게 물었어요.
+
 ## 다음 할 일
 
 1. UDGA R1 학습(GPU 2·3)이 끝나면 14개 리그를 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/udga-r50-pccr/R1 2,3`
