@@ -11,6 +11,8 @@
 | BEVDepth + UDGA-Lp (우리, 미분 가능한 L_p) | 34.1 | 30.7 | 36.8 | 24.1 | 35.1 | 35.5 | 24.7 | 29.2 | 35.2 | 8.2 | 16.4 | 23.4 | 17.7 | 10.0 |
 | BEVDepth + UDGA-Ld (우리, LiDAR depth) | 32.1 | 29.2 | 35.2 | 20.2 | 34.1 | 31.4 | 20.2 | 22.4 | 32.1 | 6.1 | 9.4 | 18.4 | 14.6 | 4.2 |
 | **BEVFormer-S (우리)** | 34.5 | 32.8 | 34.2 | 24.7 | 33.1 | 33.0 | 23.4 | 30.0 | 35.2 | 8.5 | 18.3 | 22.5 | 17.7 | 13.0 |
+| **BEVDepth (Megvii 공식 코드, 공저자 base, 우리)** | 32.1 | 29.3 | 35.4 | 0.6 | 33.3 | 25.9 | 0.6 | 10.4 | 31.0 | 0.0 | 7.1 | 12.4 | 6.5 | 3.2 |
+| BEVDepth + PD-BEV-A / -B (Megvii base, 우리) | 학습 중 | | | | | | | | | | | | | |
 | (참고) BEVDet† | 25.2 | 23.2 | 27.1 | 0.5 | 24.7 | 21.7 | 1.3 | 9.0 | 25.5 | 0.0 | 8.2 | 11.2 | 4.9 | 5.1 |
 | (참고) BEVFusion-C† | 26.0 | 24.0 | 27.1 | 0.9 | 24.0 | 21.7 | 2.2 | 14.6 | 25.7 | 0.0 | 10.6 | 12.8 | 3.6 | 6.5 |
 | (참고) Fast-BEV† | 12.9 | 12.5 | 19.2 | 6.0 | 17.6 | 18.3 | 7.0 | 9.0 | 6.1 | 1.2 | 0.0 | 9.0 | 1.8 | 0.0 |
@@ -31,6 +33,7 @@
 | + UDGA-Lp (우리) | 34.144 | 30.720 | 36.846 | 24.125 | 35.095 | 35.499 | 24.660 | 29.223 | 35.197 | 8.183 | 16.431 | 23.420 | 17.694 | 9.987 | 25.160 | 8.183 | 26.3% | 25.802 | 28.972 | ego (차량 지면 원점) |
 | + UDGA-Ld (우리) | 32.055 | 29.240 | 35.190 | 20.193 | 34.057 | 31.417 | 20.213 | 22.406 | 32.129 | 6.073 | 9.350 | 18.357 | 14.574 | 4.155 | 21.335 | 4.155 | 33.4% | 22.101 | 25.619 | ego (차량 지면 원점) |
 | BEVFormer-S (우리) | 34.536 | 32.788 | 34.227 | 24.738 | 33.103 | 32.966 | 23.359 | 29.967 | 35.158 | 8.527 | 18.305 | 22.524 | 17.660 | 13.002 | 25.102 | 8.527 | 27.3% | 25.776 | 29.073 | 차량 고정 (ego 축, 원점 = R1 LiDAR 장착점) |
+| BEVDepth (Megvii 공식, 공저자 base, 우리) | 32.137 | 29.339 | 35.448 | 0.609 | 33.292 | 25.884 | 0.583 | 10.351 | 30.979 | 0.000 | 7.149 | 12.431 | 6.463 | 3.182 | 15.055 | 0.000 | 53.2% | 16.275 | 20.504 | ego (차량 지면 원점) |
 | (참고) 사용자 표 BEVDepth [42] | 36.850 | 33.970 | 40.260 | 0.130 | 37.720 | 34.570 | 0.090 | 3.830 | 37.180 | 0.000 | 5.740 | 8.780 | 8.750 | 4.720 | 16.595 | 0.000 | 55.0% | 18.042 | 22.885 | ego (차량 지면 원점) |
 
 - 우리 BEVDepth는 [42]보다 R1 계열 리그(R1, R1-c6, R1-c10, R1-r, R1-t, R4)에서 5.5~6.9점 낮아요. 먼 리그는 비슷하고, 하락률도 비슷해요.
@@ -162,11 +165,37 @@
   - 세 설정 모두 학습 1회이고, R1 계열 차이(1~2점)는 한 체크포인트의 흔들림 범위 안일 수 있어요.
 - **주의:** 세 UDGA 설정은 모두 예전 base(PCCR BEVDet 설정)에서 EMA가 아닌 가중치로 평가했어요. vanilla를 Megvii 공식 코드로 다시 학습하고 있어서(2026-11-23 결정), 그 결과를 보고 방법 행을 어떻게 할지 정해요.
 
-## BEVDepth (Megvii 공식 코드) — 학습 중
+## BEVDepth (Megvii 공식 코드, 공저자 base)
 
-- **설정:** `megvii_bevdepth/bevdepth/exps/pccr/bev_depth_lss_r50_256x704_128x128_24e_pccr.py`([decisions.md](decisions.md) 2026-11-23)
-- **학습:** GPU 0·1이고, 끝나면 14개 리그 평가가 자동으로 이어져요(`tools/megvii_test_rigs.sh`).
-- **검사:** `tools/check_megvii_pccr.py`
-  - eval-gt: R1·R6 mAP7 100.000, 7개 클래스 위치·크기 오차 0, 방향 오차 0.0005 이하
-  - render: 박스와 LiDAR depth가 증강 이미지와 맞아요.
-  - GPU smoke: 학습 → 예측 → PCCR 채점 흐름이 끝까지 돌아요.
+- **날짜:** 2026-11-23
+- **코드:** `megvii_bevdepth/` = Megvii 공식 BEVDepth(@d78c7b5) + 공저자 PCCR 파일(perception_sota-bevdepth @7e8524f, 커밋 `e1e1996`). 공저자 plain exp는 `megvii_bevdepth/bevdepth/exps/pccr/bev_depth_lss_r50_pccr_24e.py`예요.
+- **설정:** 단일 프레임, 256×704, 9개 클래스 1 task(회전 NMS 0.2), lr 2e-4 고정, AdamW 1e-7, MultiStepLR [19, 23], 24 epoch, GPU 2장 × 4, CBGS·EMA 없음, **FP32**예요.
+  - 이 체크포인트는 제 첫 이식 exp(커밋 `6b6e123`, 지금은 지움)로 학습했어요. 공저자 plain exp와는 resize 하한(0.4825 vs 0.4826)만 달라요. info도 똑같아요([decisions.md](decisions.md) 2026-11-23).
+- **체크포인트:** `megvii_bevdepth/outputs/pccr_bevdepth_r50/R1/lightning_logs/version_0/checkpoints/epoch=23-step=11328.ckpt`(마지막 epoch, EMA 아님)
+- **채점:** 공저자 방식이에요. `-e --test_rigs`, GPU 1장, FP32, `megvii_bevdepth/pccr/eval_pccr_devkit.py`(nuscenes-devkit 1.1.10)예요.
+
+  ```bash
+  RUN=$PWD/megvii_bevdepth/outputs/pccr_bevdepth_r50/R1 bash tools/megvii_pccr_test_rigs.sh bev_depth_lss_r50_pccr_24e 0 \
+      megvii_bevdepth/outputs/pccr_bevdepth_r50/R1/lightning_logs/version_0/checkpoints/epoch=23-step=11328.ckpt
+  ```
+
+- **결과(7-class mAP):** R1 32.1, OOD 평균 15.1, 최저 0.0(R5), 하락률 53.2%, H 20.5예요. 행은 위 두 표에 있어요.
+  - R1 클래스별 AP: car 42.5, truck 34.6, bus 24.9, bicycle 45.9, motorcycle 39.1, adult 30.2, child 7.7이에요.
+  - 예전 base vanilla(R1 30.4)보다 R1·R1-c6·R1-c10·R1-r가 1.5~2.5점 높아요. R1-t는 3.2점 낮고, R4는 같아요. 먼 리그는 둘 다 무너져요(R1-f 0.6, R2 0.6, R5 0.0).
+  - 공저자 README에는 그쪽 plain 학습(amp)의 R6가 FP32 추론에서 7.43이라고 적혀 있어요. 우리 FP32 학습은 7.15라서 비슷해요.
+  - 먼 리그가 무너지는 이유는 예전 base와 같아요. camera-aware MLP의 BatchNorm1d가 R1에서 상수인 intrinsic을 거의 0인 분산으로 나눠서, intrinsic이 다른 리그에서 입력이 수만 배가 돼요. 공저자 문서도 R5에서 BEVDepth 박스가 0이라고 적었어요.
+- **원시 결과:** `.../pccr_test/epoch=23-step=11328/<RIG>/{results_nusc.json, eval.json}` (git 제외)
+- **쓰지 않은 채점:** 학습 직후 자동으로 돈 제 이식의 `-p` 채점은 예측을 R1 val 길이(1020)로 잘라서 R1에서 멈췄어요. PCCR 채점기가 빠진 샘플을 잡아서 잘못된 수치는 나오지 않았어요.
+
+## BEVDepth + PD-BEV-A / -B (Megvii base) — 학습 중
+
+- **코드:** `megvii_bevdepth/bevdepth/exps/pccr/pdbev_lss_r50_pccr_24e_{A,B}.py` (구성은 [decisions.md](decisions.md) 2026-11-23, 버그 수정 대응은 [bug_ledger.md](bug_ledger.md) "PD-BEV: Megvii base 이식")
+- **학습:** 2026-11-23, FP32, GPU 2장 × 4예요. A는 GPU 2·3(20:30 시작), B는 GPU 0·1(20:53 시작)이에요. 0.7 s/iter, 약 2.2시간이에요.
+
+  ```bash
+  bash tools/pdbev_megvii_train.sh A 2,3
+  bash tools/pdbev_megvii_train.sh B 0,1
+  ```
+
+- **평가(학습이 끝나면):** `bash tools/megvii_pccr_test_rigs.sh pdbev_lss_r50_pccr_24e_A <GPU>` (B도 같아요)
+- **검사:** `tools/check_pdbev_megvii.py`(CPU) 모두 PASS, `tools/pdbev_megvii_smoke.py`(GPU) PASS예요.

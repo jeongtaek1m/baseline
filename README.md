@@ -9,9 +9,9 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 
 | 표의 행 | View transform | Base 코드 | 상태 |
 |---|---|---|---|
-| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원) | **완료** (2026-11-22): R1 30.4 ([results.md](docs/results.md)) |
-| BEVDepth + PD-BEV | Forward | `bevdepth/` (공식 코드 버그는 논문 의도대로 수정, [bug_ledger.md](docs/bug_ledger.md)) | PD-BEV-A **완료** (2026-11-23): R1 27.8, OOD 평균 18.8. PD-BEV-B R1 학습 중 (GPU 0·1) |
-| BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 vanilla BEVDepth 위에 재구현, 공식 코드 버그는 논문 의도대로 수정) | 재구현 완료, R1 학습 (2026-11-23, GPU 2·3) |
+| BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원); `megvii_bevdepth/` (Megvii 공식 + 공저자 PCCR 파일) | **완료**: 예전 base R1 30.4 (2026-11-22); Megvii 공식 코드 R1 32.1, OOD 평균 15.1 (2026-11-23) ([results.md](docs/results.md)) |
+| BEVDepth + PD-BEV | Forward | 위 두 base 각각 (공식 코드 버그는 논문 의도대로 수정, [bug_ledger.md](docs/bug_ledger.md)) | 예전 base **완료**: A R1 27.8 / OOD 18.8, B R1 27.8 / OOD 20.3. Megvii base A·B 학습 중 (2026-11-23, GPU 2·3 / 0·1) |
+| BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 vanilla BEVDepth 위에 재구현, 공식 코드 버그는 논문 의도대로 수정) | 예전 base 세 설정 **완료** (처음 R1 33.0 / OOD 23.4, Lp 34.1 / 25.2, Ld 32.1 / 21.3). Megvii base로 옮길지는 결정 전 |
 | BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | **완료** (2026-11-23): R1 34.5, OOD 평균 25.1, 독립 검증 통과. 기존 행(R1 21.1)은 재현되지 않아요 |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
 | + UniDrive, + CoIn3D | — | — | 이번 범위에서 제외 |
@@ -26,6 +26,7 @@ Gen2E/
 ├── docs/                    결정 기록 · 평가 프로토콜 · 데이터 · 환경 · 포팅 계획 · 진행 기록
 ├── bevdepth/                BEVDepth 계열 작업 공간 (= PD-BEV 레포 @c2995d1, BEVDet dev2.0 기반)
 ├── bevformer/               BEVFormer-S 작업 공간 (= 공식 BEVFormer @66b65f3)
+├── megvii_bevdepth/         Megvii 공식 BEVDepth (@d78c7b5) + 공저자 PCCR 파일 (@7e8524f) + PD-BEV 이식 (env gen2e-megvii)
 ├── third_party/
 │   ├── UDGA/                UDGA 원본 (@9198218, 참고용, 수정 금지)
 │   └── pccr/                PCCR 벤치마크 원본 (@6798206: 데이터셋 어댑터, 설정, 공식 결과)
@@ -44,6 +45,11 @@ Gen2E/
 │   ├── check_bevformer_pccr.py  BEVFormer PCCR 어댑터 확인 (박스 변환, GT 평가, 투영)
 │   ├── check_pccr_eval_copy.py  BEVFormer의 PCCR 평가 코드가 PCCR 원본과 같은지 확인
 │   ├── bugrepro/            PD-BEV 버그 재현 체크(CPU)와 GPU 스모크 체크
+│   ├── setup_env_megvii.sh  gen2e-megvii (수정 없는 mmdet3d 1.0.0rc4 + Megvii BEVDepth)
+│   ├── pdbev_megvii_train.sh  Megvii base PD-BEV(A|B) R1 학습 (GPU 2장, FP32)
+│   ├── megvii_pccr_test_rigs.sh  Megvii base exp를 14개 리그에서 공저자 방식으로 채점 (GPU 1장, FP32)
+│   ├── check_pdbev_megvii.py  Megvii base PD-BEV 데이터·기하 확인 (CPU)
+│   ├── pdbev_megvii_smoke.py  Megvii base PD-BEV GPU 스모크
 │   ├── setup_env_bevdepth.sh
 │   └── setup_env_bevformer.sh
 └── data/pccr -> /data2/PCCR (심볼릭 링크, git 제외)

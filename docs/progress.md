@@ -100,10 +100,18 @@
   - vanilla: 최대 확률 0.47, 엔트로피 1.8, logit 크기 3.9예요(같은 epoch 4).
   - L_ov는 모든 logit이 같으면 0이 되는데, LiDAR depth도 없고 L_p 그래디언트도 없으니 모델이 그쪽으로 가요. 그래도 val mAP는 LiDAR depth가 없는 PD-BEV-A와 비슷하게 올라요(epoch 6: 12.3 vs 13.4). 어떻게 할지 사용자에게 물었어요.
 
+- **Megvii base (저녁):** 공저자가 perception_sota-bevdepth @7e8524f에 Megvii 공식 BEVDepth용 PCCR 파일을 올렸어요. 사용자 결정에 따라 제 이식을 공저자 파일로 바꾸고(커밋 `e1e1996`, 제 파일 삭제 `aad3a38`), 그 위에 PD-BEV-A·B를 FP32로 옮겼어요([decisions.md](decisions.md) 2026-11-23).
+  - 공저자 info를 우리 데이터 경로로 다시 만들었어요(`megvii_bevdepth/data/pccr_megvii/`, 15개). 제 info와 토큰 순서·카메라 순서·주석·속도·점 수가 같아요.
+  - **vanilla(Megvii FP32 체크포인트, 공저자 채점):** R1 32.1, OOD 평균 15.1, 하락률 53.2%예요([results.md](results.md)). 학습 직후 돈 제 이식의 `-p` 채점은 예측을 R1 val 길이(1020)로 잘라서 쓰지 않았어요.
+  - **PD-BEV 이식:** 새 파일 7개예요(커밋 `605bc09`, `0043e7a`, `9f10c0f`). 예전 base의 수정(PDBEV-1~18)을 그대로 옮겼어요([bug_ledger.md](bug_ledger.md) "PD-BEV: Megvii base 이식").
+  - **검사:** `tools/check_pdbev_megvii.py` 6개 모두 PASS예요. 2D 타깃은 독립 투영과 peak가 같고(86개), 타깃 중심을 같은 카메라의 기하로 되돌리면 박스 중심과 1e-05 m 안에서 맞아요. GPU 스모크도 PASS예요(파라미터 477/477개 그래디언트, 배치 4에서 17.8 GB).
+  - **학습:** PD-BEV-A는 GPU 2·3(20:30), PD-BEV-B는 GPU 0·1(20:53)에서 돌고 있어요. 0.7 s/iter, 각각 약 2.2시간이에요.
+  - **공식 Megvii 코드에서 본 것:** CenterHead heatmap bias(−2.19)가 적용되지 않아서 첫 step 검출 손실이 약 2.5e3이에요(vanilla, PD-BEV 같음). 공식 그대로 둬요.
+- **GitHub:** `jeongtaek1m/baseline`은 아직 공개 상태예요(2026-11-23 20:55 확인). UDGA 코드(Samsung 소유)가 들어 있어요. 로컬 main은 그 뒤로 커밋이 더 있고, 푸시하지 않았어요.
+
 ## 다음 할 일
 
-1. UDGA R1 학습(GPU 2·3)이 끝나면 14개 리그를 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/udga-r50-pccr/R1 2,3`
-2. PD-BEV-B 학습(GPU 0·1, 12:30쯤 끝남)이 끝나면 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/pdbev-r50-pccr-B/R1 0,1`
-3. BEVFormer-S 14개 리그 평가 결과를 정리해요.
-4. BEVFormer-S + PD-BEV를 만들어요(5장).
-5. 사용자가 표의 BEVDepth 행을 다시 검증한 뒤, 표에 넣을 행을 정해요.
+1. PD-BEV-A(약 22:45)와 PD-BEV-B(약 23:05)가 끝나면 14개 리그를 채점해요. GPU 1장씩 쓰고, 리그를 반씩 나눠 돌릴 수 있어요: `RIGS="R1 R1-t R1-r R1-f R1-c6 R1-c10 R2" bash tools/megvii_pccr_test_rigs.sh pdbev_lss_r50_pccr_24e_A 2`
+2. 결과를 [results.md](results.md)의 두 표에 넣고 vanilla(Megvii)와 비교해요.
+3. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), UDGA를 새 base로 옮길지, 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth 행.
+4. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
