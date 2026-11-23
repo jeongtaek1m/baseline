@@ -16,6 +16,9 @@ fi
 GPU_IDS=$1
 shift
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# one BLAS/OpenMP thread per process: the 8 data workers otherwise oversubscribe the CPUs
+# (per-sample load 0.15 s single-threaded, slower with 8 threads); no effect on results
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1} MKL_NUM_THREADS=${MKL_NUM_THREADS:-1} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
 PY=${PY:-$HOME/miniconda3/envs/gen2e-megvii/bin/python}
 NGPU=$(awk -F, '{print NF}' <<< "$GPU_IDS")
 OUT=${OUT:-$REPO/megvii_bevdepth/outputs/pccr_bevdepth_r50/R1}

@@ -21,6 +21,9 @@ if [ ${#RIGS[@]} -eq 0 ]; then
     RIGS=(R1 R1-c6 R1-c10 R1-f R1-r R1-t R2 R3 R4 R5 R6 R7 R8 R9)
 fi
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# one BLAS/OpenMP thread per process: the 8 data workers otherwise oversubscribe the CPUs
+# (per-sample load 0.15 s single-threaded, slower with 8 threads); no effect on results
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1} MKL_NUM_THREADS=${MKL_NUM_THREADS:-1} OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
 PY=${PY:-$HOME/miniconda3/envs/gen2e-megvii/bin/python}
 SCORE_PY=${SCORE_PY:-$HOME/miniconda3/envs/gen2e-bevdepth/bin/python}
 NGPU=$(awk -F, '{print NF}' <<< "$GPU_IDS")
