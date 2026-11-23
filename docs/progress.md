@@ -105,13 +105,12 @@
   - **vanilla(Megvii FP32 체크포인트, 공저자 채점):** R1 32.1, OOD 평균 15.1, 하락률 53.2%예요([results.md](results.md)). 학습 직후 돈 제 이식의 `-p` 채점은 예측을 R1 val 길이(1020)로 잘라서 쓰지 않았어요.
   - **PD-BEV 이식:** 새 파일 7개예요(커밋 `605bc09`, `0043e7a`, `9f10c0f`). 예전 base의 수정(PDBEV-1~18)을 그대로 옮겼어요([bug_ledger.md](bug_ledger.md) "PD-BEV: Megvii base 이식").
   - **검사:** `tools/check_pdbev_megvii.py` 6개 모두 PASS예요. 2D 타깃은 독립 투영과 peak가 같고(86개), 타깃 중심을 같은 카메라의 기하로 되돌리면 박스 중심과 1e-05 m 안에서 맞아요. GPU 스모크도 PASS예요(파라미터 477/477개 그래디언트, 배치 4에서 17.8 GB).
-  - **학습:** PD-BEV-A는 GPU 2·3(20:30), PD-BEV-B는 GPU 0·1(20:53)에서 돌고 있어요. 0.7 s/iter, 각각 약 2.2시간이에요.
+  - **학습:** PD-BEV-A는 GPU 2·3(20:30~22:40), PD-BEV-B는 GPU 0·1(20:46~22:53)에서 돌았어요. 0.69 s/iter예요. 끝나자마자 14개 리그 채점이 자동으로 이어졌어요.
+  - **결과(23:15):** PD-BEV-A는 R1 33.6, OOD 평균 23.4, H 27.6이에요. PD-BEV-B는 R1 34.0, OOD 평균 23.4, H 27.7이에요. 같은 base vanilla보다 14개 리그 모두 높고, R1도 1.5~1.9점 올라요([results.md](results.md)).
   - **공식 Megvii 코드에서 본 것:** CenterHead heatmap bias(−2.19)가 적용되지 않아서 첫 step 검출 손실이 약 2.5e3이에요(vanilla, PD-BEV 같음). 공식 그대로 둬요.
 - **GitHub:** `jeongtaek1m/baseline`은 아직 공개 상태예요(2026-11-23 20:55 확인). UDGA 코드(Samsung 소유)가 들어 있어요. 로컬 main은 그 뒤로 커밋이 더 있고, 푸시하지 않았어요.
 
 ## 다음 할 일
 
-1. PD-BEV-A(약 22:45)와 PD-BEV-B(약 23:05)가 끝나면 14개 리그를 채점해요. GPU 1장씩 쓰고, 리그를 반씩 나눠 돌릴 수 있어요: `RIGS="R1 R1-t R1-r R1-f R1-c6 R1-c10 R2" bash tools/megvii_pccr_test_rigs.sh pdbev_lss_r50_pccr_24e_A 2`
-2. 결과를 [results.md](results.md)의 두 표에 넣고 vanilla(Megvii)와 비교해요.
-3. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), UDGA를 새 base로 옮길지, 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth 행.
-4. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
+1. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), UDGA를 새 base로 옮길지, 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth·PD-BEV 행.
+2. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
