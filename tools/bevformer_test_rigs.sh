@@ -41,12 +41,15 @@ CONFIG=${CONFIGS[0]}
 for RIG in "${RIGS[@]}"; do
     ROOT="../data/pccr/$RIG/"
     OUT="$WORK_DIR/test_on_${RIG}_test"
-    echo "[gen2e] $RIG: $(basename "$CKPT") -> $OUT"
+    echo "[gen2e] $RIG: $(basename "$CKPT") -> $OUT (data_root=$ROOT ann_file=${ROOT}${RIG}_infos_test.pkl)"
     CUDA_VISIBLE_DEVICES=$GPU_IDS PORT=$PORT \
         bash tools/dist_test.sh "$CONFIG" "$CKPT" "$NGPU" \
         --cfg-options data.test.data_root="$ROOT" data.test.ann_file="${ROOT}${RIG}_infos_test.pkl" \
         --eval-options jsonfile_prefix="$OUT" 2>&1 | tee "$OUT.log"
     realpath "$CKPT" > "$OUT/checkpoint.txt"  # read by pccr_metric.py summarize
+    # the data this rig was evaluated on (physical paths; the test log does not echo cfg-options)
+    printf 'data_root=%s\nann_file=%s\n' "$(realpath "$ROOT")" \
+        "$(realpath "${ROOT}${RIG}_infos_test.pkl")" > "$OUT/data.txt"
 done
 
 python3 "$REPO/tools/pccr_metric.py" summarize "$WORK_DIR/test_on_*_test/**/metrics_summary.json"
