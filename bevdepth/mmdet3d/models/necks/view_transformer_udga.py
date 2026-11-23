@@ -23,7 +23,8 @@ class LSSViewTransformerBEVDepthUDGA(LSSViewTransformerBEVDepth):
     Everything else is the vanilla LSSViewTransformerBEVDepth (DepthNet, BEVPoolv2).
     `forward` returns the depth logits instead of the softmax, because UDGA's overlap loss
     compares logits (config `ssl_loss='l1_loss'`); the lift still uses the softmax.
-    Gen2E trains UDGA without LiDAR depth (decision 2026-11-23), so get_depth_loss is unused.
+    The main Gen2E UDGA run has no LiDAR depth (decision 2026-11-23); the UDGA-Ld variant
+    uses get_depth_loss_virtual.
     """
 
     def __init__(self, pixel_const=400.0, **kwargs):
@@ -55,6 +56,18 @@ class LSSViewTransformerBEVDepthUDGA(LSSViewTransformerBEVDepth):
         points = bda.view(B, 1, 1, 1, 1, 3,
                           3).matmul(points.unsqueeze(-1)).squeeze(-1)
         return points
+
+    def get_depth_loss_virtual(self, gt_depths, depth_preds, cam2imgs, post_rots):
+        """Vanilla BEVDepth depth loss with the LiDAR depth moved into the virtual-depth bins.
+
+        UDGA-2: the official target is d / k while its lift is v / k. Here the target is
+        v = d * k (DG-BEV eq. 3), exactly what get_lidar_coor inverts. gt_depths: metric
+        LiDAR depth maps (B, N, H, W) from PointToMultiViewDepth (0 = no point); k is constant
+        per camera, so it commutes with the min-pooling in get_downsampled_gt_depth.
+        depth_preds: softmax probabilities (B*N, D, fH, fW), as the vanilla loss expects.
+        """
+        k = self.depth_scale(cam2imgs, post_rots)
+        return self.get_depth_loss(gt_depths * k[..., None, None], depth_preds)
 
     def forward(self, input):
         (x, rots, trans, intrins, post_rots, post_trans, bda,

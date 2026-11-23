@@ -199,29 +199,127 @@ def photo_reprojection_public(depth_pred, img, rots, trans, intrins, post_rots, 
     return src_img.view(1, 1, -1, 3), tar_img.view(1, 1, -1, 3)
 
 
+# mmlabNormalize (loading_upstream.py): RGB, (x - mean) / std on 0..255 values
+IMG_MEAN = (123.675, 116.28, 103.53)
+IMG_STD = (58.395, 57.12, 57.375)
+
+
+def expected_metric_depth(depth_logits, view_transformer, intrins, post_rots, out_hw):
+    """Expected metric depth of every image pixel, (B, N, H, W), differentiable.
+
+    E[v] over the softmax of the virtual-depth bins (each bin at its frustum depth
+    d0 + b * step, as the lift places it), divided by k (DG-BEV eq. 3), then bilinearly
+    upsampled from the feature grid to the image with align_corners=True, which matches
+    the frustum's pixel grid linspace(0, W_in - 1, fW).
+    """
+    vt = view_transformer
+    B, N = intrins.shape[:2]
+    BN, D, fh, fw = depth_logits.shape
+    d0, _, step = vt.grid_config['depth']
+    bins = d0 + step * torch.arange(D, device=depth_logits.device, dtype=depth_logits.dtype)
+    ev = (depth_logits.softmax(1) * bins.view(1, D, 1, 1)).sum(1, keepdim=True)  # (BN,1,fh,fw)
+    em = ev / vt.depth_scale(intrins, post_rots).reshape(BN, 1, 1, 1)
+    return F.interpolate(em, size=out_hw, mode='bilinear', align_corners=True).view(B, N, *out_hw)
+
+
+def photometric_error_maps(depth, rgb, rots, trans, intrins, post_rots, post_trans, pairs, ssim):
+    """Per-pair photometric error of UDGA's L_p (paper eq. 4), differentiable in `depth`.
+
+    depth (B, N, H, W): metric depth of camera i's pixels (augmented image grid).
+    rgb (B, N, 3, H, W): images in [0, 1]. For each ordered pair (i, j) of `pairs[b]`, every
+    pixel p of camera i is back-projected with depth(p) (inverse image augmentation, K_i^-1,
+    sensor2ego of i), projected into camera j (inverse sensor2ego of j, K_j, augmentation of j)
+    and I_j is bilinearly sampled there (eq. 4: <.> = bilinear sampling). The error is the public
+    code's mix, pe = 0.85 * (1 - SSIM) / 2 + 0.15 * |I_i - I_j<p*>| (bevssl.py:225-233), with
+    the public 3x3 SSIM on the full images. A pixel counts when its projection lies inside
+    image j in front of the camera, and neither image is augmentation padding (black) there.
+    Returns a list over (b, i, j) of (pe (H, W), valid (H, W) bool).
+    """
+    B, N, _, H, W = rgb.shape
+    dev, dt = depth.device, depth.dtype
+    ys, xs = torch.meshgrid(torch.arange(H, device=dev, dtype=dt),
+                            torch.arange(W, device=dev, dtype=dt), indexing='ij')
+    pix = torch.stack([xs, ys, torch.ones_like(xs)], -1).view(-1, 3)
+    content = (rgb.sum(2, keepdim=True) > 1e-3).to(dt)  # (B, N, 1, H, W); padding is black
+    out = []
+    for b in range(B):
+        for i, j in pairs[b]:
+            p = (pix - post_trans[b, i]) @ torch.inverse(post_rots[b, i]).T  # un-augmented, z = 1
+            d = depth[b, i].reshape(-1, 1)
+            cam_i = torch.cat([p[:, :2] * d, d], 1) @ torch.inverse(intrins[b, i]).T
+            cam_j = (cam_i @ rots[b, i].T + trans[b, i] - trans[b, j]) @ rots[b, j]
+            z = cam_j[:, 2:3]
+            uv = cam_j @ intrins[b, j].T
+            uvz = torch.cat([uv[:, :2] / z.clamp(min=1e-3), z], 1) @ post_rots[b, j].T + post_trans[b, j]
+            gx = uvz[:, 0] / (W - 1) * 2 - 1
+            gy = uvz[:, 1] / (H - 1) * 2 - 1
+            grid = torch.stack([gx, gy], -1).view(1, H, W, 2)
+            warped = F.grid_sample(rgb[b, j:j + 1], grid, mode='bilinear', padding_mode='zeros',
+                                   align_corners=True)
+            warped_content = F.grid_sample(content[b, j:j + 1], grid, mode='bilinear',
+                                           padding_mode='zeros', align_corners=True)
+            target = rgb[b, i:i + 1]
+            l1 = (warped - target).abs().mean(1)[0]
+            ssim_map = ssim(warped, target).mean(1)[0]
+            pe = 0.85 * ssim_map + 0.15 * l1
+            valid = ((z.view(H, W) > 1e-3) & (gx.view(H, W).abs() <= 1) & (gy.view(H, W).abs() <= 1)
+                     & (warped_content[0, 0] > 0.999) & (content[b, i, 0] > 0.5)).detach()
+            out.append((pe, valid))
+    return out
+
+
+def photometric_loss_paper(depth_logits, imgs, rots, trans, intrins, post_rots, post_trans,
+                           pairs, view_transformer, ssim, weight=2.0):
+    """UDGA L_p as the paper writes it (eq. 4), so that it has a gradient (UDGA-4 fixed).
+
+    Expected metric depth from the depth logits, the normalised network images turned back
+    into [0, 1] RGB, photometric_error_maps over the overlapping pairs, mean over the valid
+    pixels of all pairs in the batch, times `weight` (2.0, the public code's value). Returns
+    a zero that keeps the graph when no pixel is valid.
+    """
+    H, W = imgs.shape[-2:]
+    mean = imgs.new_tensor(IMG_MEAN).view(1, 1, 3, 1, 1)
+    std = imgs.new_tensor(IMG_STD).view(1, 1, 3, 1, 1)
+    rgb = ((imgs * std + mean) / 255.0).clamp(0, 1)
+    depth = expected_metric_depth(depth_logits, view_transformer, intrins, post_rots, (H, W))
+    maps = photometric_error_maps(depth, rgb, rots, trans, intrins, post_rots, post_trans, pairs, ssim)
+    vals = [pe[v] for pe, v in maps if bool(v.any())]
+    if not vals:
+        return depth_logits.sum() * 0.0
+    return weight * torch.cat(vals).mean()
+
+
 @DETECTORS.register_module()
 class BEVDepthUDGA(BEVDepth4D):
     """BEVDepth (single frame, as the vanilla config) + UDGA domain-generalisation losses.
 
     UDGA pre-training stage (paper sec. 3.3, 3.5; config bevssl3sup_..._pc400_L1_extaug.py),
     as decided for Gen2E on 2026-11-23 (docs/decisions.md):
-      L = L_det + overlap_loss_weight * L_ov + L_p
-      * no LiDAR depth loss (paper table 4 / eq. 7)
+      L = L_det + overlap_loss_weight * L_ov + L_p [+ L_d]
       * L_ov: overlap_loss() above, weight 1 (official ssl_weight)
-      * L_p: the public code's photometric term, weight 2.0 (hard-coded there); it has no
-        gradient, so it is logged but does not change training
+      * L_p, photo_loss_mode:
+          'public' the public code's term (photo_reprojection_public), weight 2.0; no
+                   gradient, so it is logged but does not change training (main run)
+          'paper'  photometric_loss_paper (eq. 4 with bilinear sampling), weight 2.0 (UDGA-Lp)
+      * L_d, lidar_depth_loss: False = no LiDAR depth (paper table 4 / eq. 7; main run and
+        UDGA-Lp); True = the vanilla BEVDepth depth loss on virtual-depth targets, as the
+        public config has LiDAR depth on (UDGA-Ld; needs gt_depth in the pipeline)
       * virtual depth bins: LSSViewTransformerBEVDepthUDGA (pixel_const 400)
       * ext aug: LoadAnnotationsBEVDepthExtAug in the pipeline
     LEDA (adapters) is the label-efficient adaptation stage and is not part of DG.
     """
 
     def __init__(self, overlap_loss_weight=1.0, overlap_loss_beta=1.0,
-                 photo_loss_weight=2.0, **kwargs):
+                 photo_loss_weight=2.0, photo_loss_mode='public', lidar_depth_loss=False,
+                 **kwargs):
         super().__init__(**kwargs)
         assert self.num_frame == 1, 'UDGA here is single-frame (num_adj=0)'
+        assert photo_loss_mode in ('public', 'paper')
         self.overlap_loss_weight = overlap_loss_weight
         self.overlap_loss_beta = overlap_loss_beta
         self.photo_loss_weight = photo_loss_weight
+        self.photo_loss_mode = photo_loss_mode
+        self.lidar_depth_loss = lidar_depth_loss
         self.compute_ssim_loss = SSIM()
 
     def get_rgb_loss(self, rgb1, rgb2, weight=2.0):
@@ -254,7 +352,15 @@ class BEVDepthUDGA(BEVDepth4D):
         corr = frustum_correspondences(self.img_view_transformer, *cam)
         losses = dict(loss_overlap=self.overlap_loss_weight * overlap_loss(
             depth_logits, corr, beta=self.overlap_loss_beta))
-        if self.photo_loss_weight > 0:
+        if self.lidar_depth_loss:
+            losses['loss_depth'] = self.img_view_transformer.get_depth_loss_virtual(
+                kwargs['gt_depth'], depth_logits.softmax(1), intrins[0], post_rots[0])
+        if self.photo_loss_weight > 0 and self.photo_loss_mode == 'paper':
+            losses['loss_rgb'] = photometric_loss_paper(
+                depth_logits, imgs[0], *cam, pairs=corr['pairs'],
+                view_transformer=self.img_view_transformer, ssim=self.compute_ssim_loss,
+                weight=self.photo_loss_weight)
+        elif self.photo_loss_weight > 0:
             rgb_s, rgb_t = photo_reprojection_public(
                 depth_logits, imgs[0], *cam, pairs=corr['pairs'],
                 dbound=self.img_view_transformer.grid_config['depth'][:2])
