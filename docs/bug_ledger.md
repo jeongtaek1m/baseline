@@ -88,6 +88,43 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-11 | GPU 스모크(`tools/bugrepro/pdbev_smoke.py`): PD-BEV-A 설정으로 R1 mini 2샘플 학습 1 step 동안 `BEV_aux` forward 횟수를 세요. | (공식 코드: 3번, 코드 읽기) | PASS: 1번. 같은 step에서 모든 손실이 유한하고, 학습 파라미터 462/462개에 그래디언트가 있어요. | `ec1615b` |
 | PDBEV-15 | 같은 스크립트에서 test 파이프라인 샘플 하나로 `simple_test`를 돌려요. | (공식 코드: TypeError, 코드 읽기) | PASS: 박스 379개 | `dffad88` |
 
+## PD-BEV: Megvii base 이식 (2026-11-23)
+
+공저자 Megvii base(`megvii_bevdepth/`, perception_sota-bevdepth @7e8524f) 위에 PD-BEV를 **새 파일로** 다시 옮겼어요([decisions.md](decisions.md) 2026-11-23). 위의 고친 내용을 그대로 옮겼고, 공식 코드와 공저자 파일은 고치지 않았어요.
+- `megvii_bevdepth/bevdepth/datasets/pccr_pdbev_dataset.py`: 실제 intrinsic, 가상 카메라, 2D 타깃이에요(커밋 `605bc09`).
+- `megvii_bevdepth/bevdepth/layers/backbones/pdbev_lss_fpn.py`, `layers/heads/pdbev_aux.py`, `models/pdbev_bev_depth.py`: virtual depth LSS, 보조 head, IFV 렌더링, 손실이에요(커밋 `0043e7a`).
+- `megvii_bevdepth/bevdepth/exps/pccr/base_exp_pccr_pdbev.py`, `pdbev_lss_r50_pccr_24e_{A,B}.py`: exp예요(커밋 `9f10c0f`).
+
+| ID | 새 base에서 | 확인 |
+|---|---|---|
+| PDBEV-1 | 옮김: 렌더링이 IFV를 (B, C, Z, Y, X)로 읽어요(`PDBEVBEVDepth.render`). | geometry 체크 |
+| PDBEV-2 | 해당 없음: BEV 보조 손실이 없어요(2026-11-22 결정). head는 Megvii `BEVDepthHead`예요. | — |
+| PDBEV-3 | 옮김: 가상 카메라 자세 하나를 렌더링과 가상 뷰 타깃이 같이 써요. | geometry 체크: 타깃 중심을 같은 카메라의 `get_geometry`로 되돌리면 박스 중심과 1.0e-05 m 안에서 맞아요. |
+| PDBEV-4 | 옮김: 라벨 0..C−1만 그려요. | targets 체크 |
+| PDBEV-5 | 옮김: 2D 타깃 물체 = `PCCRDetDataset.get_gt`의 박스 중 BDA 뒤 중심이 BEV 범위 안인 것(3D head가 학습하는 물체)이에요. | targets 체크 |
+| PDBEV-6/7 | 옮김: 유효성은 증강 뒤 feature map 좌표로, 창 시작은 `max(·, 0)`이에요. | targets 체크 |
+| PDBEV-8 | 옮김(float). Megvii z 8 m / 4칸이라 원래도 나누어떨어져요(2 m). | — |
+| PDBEV-9 | 옮김: flip이면 cx'를 거울상으로 옮겨요. | intrinsics 체크 |
+| PDBEV-10 | 옮김: pitch_aug → Euler roll, roll_aug → Euler pitch예요. | virtual 체크(회전축) |
+| PDBEV-11 | 옮김: IFV를 step마다 한 번 계산해요. | GPU 스모크: `BEV_Aux` 1번 |
+| PDBEV-12 | 옮김: `sigmoid(F_height) · F_bev`예요. | — |
+| PDBEV-13/14 | 공식 유지(2026-11-22 결정). 회귀 손실은 공식처럼 픽셀 맵의 평균이에요(공식은 mmdet `parse_losses`가 평균했어요). | — |
+| PDBEV-15/18 | 해당 방식으로: 추론은 기본 BEVDepth 경로예요(eval 모드 `forward`). Megvii exp는 학습 중 평가를 하지 않아요. | GPU 스모크: `eval_step` |
+| PDBEV-16 | 해당 없음: 테스트 crop은 base(`NuscDetDataset`)의 결정적 crop이에요. | test-inputs 체크 |
+| PDBEV-17 | 옮김: 마지막에 identity로 초기화한 1×1 선형 conv가 있어요. | — |
+
+**체크 (`tools/check_pdbev_megvii.py`, CPU, R1, 범위 A, 6~8샘플, 커밋 `5235450`): 모두 PASS예요.**
+- test-inputs: PD-BEV 테스트 데이터셋의 이미지·행렬·토큰이 공저자 `PCCRDetDataset`과 똑같아요(R1, R6).
+- intrinsics: 카메라 48대(flip 22대)에서 주점 오차 0 px, 초점거리 오차 5e-05예요.
+- virtual: 섭동이 범위 안이고, 회전축이 맞아요(pitch_aug는 카메라 x, roll_aug는 카메라 z, yaw는 ego z).
+- targets: 2 뷰 × 8대에서 peak 86개, 독립 투영과 비교해 빠짐 0, 남음 0, 창 누락 0이에요. 채널 2 = 채널 6 · k예요.
+- geometry: 타깃 중심 86개가 박스 중심과 최대 1.0e-05 m 차이예요(실제·가상 뷰).
+- depth-labels: L_pg 라벨의 fg 칸과 bin이 독립 계산과 같아요.
+
+**GPU 스모크 (`tools/pdbev_megvii_smoke.py`, GPU 1장, 배치 4, FP32):** 손실이 모두 유한하고, 학습 파라미터 477/477개에 그래디언트가 있어요. `BEV_Aux`는 step마다 1번이고, 메모리는 17.8 GB(예약 19.8 GB), 0.7 s/iter예요. `eval_step`은 샘플마다 박스를 내요.
+
+**공식 Megvii 코드에서 본 것 (고치지 않음):** `BEVDepthHead`는 trunk와 neck만 `init_weights()`를 불러요. CenterHead task head의 heatmap bias 초기값(−2.19)이 적용되지 않아서, 학습 첫 step의 검출 손실이 약 2.5e3이에요. vanilla(첫 step 2.54e3)와 PD-BEV(2.6e3)가 같아요. 50 step 안에 10 아래로 내려가요. 공식 그대로 둬요.
+
 ## UDGA: 재구현에서 고친 것 (DG 학습 경로)
 
 UDGA는 BEVDet master(mmdet3d 0.17) 위의 오버레이라서 그대로 옮길 수 없어요. 그래서 vanilla BEVDepth 경로 위에 **새 파일로 재구현**했어요([porting_plan.md](porting_plan.md) 3장). 기존 파일은 고치지 않았어요.
