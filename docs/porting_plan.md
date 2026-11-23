@@ -165,7 +165,7 @@ PD-BEV는 BEVDet 원본 16개 파일을 직접 고쳤어요(부록 A). vanilla B
   - FOV 120° 리그(R5~R9)에서는 virtual-depth 범위가 약 0.45~44.7 m라서 car 평가 범위(50 m)보다 짧아요.
   - 원 논문 값을 유지할지 정해야 해요.
 
-## 3. BEVDepth + UDGA — 규모 L (재구현)
+## 3. BEVDepth + UDGA — 규모 L (재구현, 2026-11-23 구현 완료)
 
 UDGA 원본은 **BEVDet master @b17b6e8(mmdet3d 0.17.2)용 오버레이**라서, mmdet3d 1.0.0rc4인 PD-BEV 트리에 파일을 그대로 복사할 수 없어요. 아래 구성요소를 새로 구현해요. 원본은 `third_party/UDGA/`에 참고용으로 둬요.
 
@@ -187,6 +187,22 @@ UDGA 원본은 **BEVDet master @b17b6e8(mmdet3d 0.17.2)용 오버레이**라서,
 - **epoch:** 논문은 24, 코드는 32예요.
 
 참고로 카메라 10대 리그에서는 원본 코드의 배치 계산 두 개가 서로 달라서 크래시가 나요(`bevssl.py:55` vs `bevssl_unsupdepth.py:112`). 재구현에서는 이 문제가 없어요.
+
+**구현 (2026-11-23, 커밋 `c1982eb`~`31ecc5f`).** 위 "결정이 필요한 것"은 모두 사용자가 정했어요([decisions.md](decisions.md) 2026-11-23). 재현 범위는 2026-11-22에 "논문 의도대로 수정"으로, epoch은 vanilla 규칙(24)으로 이미 정해져 있었어요.
+
+| 파일 | 내용 |
+|---|---|
+| `mmdet3d/necks/view_transformer_udga.py` | `LSSViewTransformerBEVDepthUDGA`: vanilla `LSSViewTransformerBEVDepth`이고, depth bin을 virtual depth로 lift해요(metric = virtual / k, `pixel_const` 400). `forward`는 L_ov용 logit을 반환해요. |
+| `mmdet3d/models/detectors/bevdepth_udga.py` | `frustum_correspondences`: 카메라 i의 lift 점을 다른 모든 카메라 j의 frustum 칸에 대응시켜요(UDGA-1/3/7/8). `overlap_loss`: 대응 칸만 SmoothL1로 비교하고, 같은 칸 값은 평균해요(UDGA-6/9). `photo_reprojection_public`: 공개 코드의 L_p 그대로예요(그래디언트 0). `BEVDepthUDGA`: `BEVDepth4D`(num_adj=0)에 두 손실을 더하고, LiDAR depth 손실은 쓰지 않아요. |
+| `mmdet3d/datasets/pipelines/loading_udga.py` | `LoadAnnotationsBEVDepthExtAug`: 업스트림 BDA에 확률 0.5로 {−90°, 90°, 180°} 회전을 더해요. |
+| `configs/gen2e/udga-r50-pccr.py` | vanilla 설정 상속. LiDAR 로딩 없음, depth bin [1, 90, 1], L_ov 가중치 1, L_p 가중치 2.0이에요. |
+
+- **기본 구조는 vanilla와 같아요.** 공식 UDGA의 view transformer(BEVDet master: SE 모듈, ResNet 블록, DCNv2)는 쓰지 않고, vanilla의 DepthNet을 써요. PD-BEV와 같은 원칙이에요.
+- **확인**
+  - 재현 체크 9개는 장부 "UDGA 재현 체크"에 있어요. 공식 9개는 모두 FAIL이고, 재구현은 7개 PASS에 2개는 결정대로 n/a예요.
+  - GPU 스모크: R1 mini 4샘플로 학습 1 step을 돌리면 손실이 모두 유한하고, 308/308개 파라미터에 그래디언트가 흘러요. 샘플마다 쌍 16개이고, 메모리는 7.5 GB예요. `simple_test`도 돌아요.
+  - 2-GPU 1 epoch mini 학습이 평가까지 끝나요(0.69 s/iter, 8.9 GB).
+- **학습:** R1, GPU 2·3이에요. 출력은 `bevdepth/work_dirs/udga-r50-pccr/R1/`, 로그는 `logs/train_udga-r50-pccr_R1.log`예요.
 
 ## 4. BEVFormer-S (vanilla 재현) — 규모 M
 

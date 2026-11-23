@@ -73,11 +73,28 @@
   - 2-GPU mini 학습과 평가도 통과했어요(0.91 s/iter, GPU당 13.7 GB).
 - **PD-BEV-A R1 학습을 시작했어요** (23:13, GPU 0·1). 약 3시간 반 걸려요. 출력은 `bevdepth/work_dirs/pdbev-r50-pccr-A/R1/`예요.
 
+## 2026-11-23
+
+- **학습 종료 → 평가 시작 (09:15):** BEVFormer-S(06:48)와 PD-BEV-A(02:33)가 24 epoch을 끝냈어요. 14개 리그 평가를 GPU 0·1(PD-BEV-A)과 2·3(BEVFormer-S)에서 돌렸어요. PD-BEV-B 학습은 A 평가 뒤에 GPU 0·1에서 자동으로 시작했어요.
+- **PD-BEV-A 결과:** 7-class mAP가 R1 27.8이에요. vanilla(30.4)보다 2.6점 낮지만 화각이 다른 리그에서 크게 올랐어요(R1-f 0.2 → 15.3, R2 0.1 → 18.7, R3 5.7 → 20.8). 행 전체는 [results.md](results.md)에 있어요.
+- **사용자 표와 비교 (사용자 요청):** 사용자 표의 BEVDepth [42]는 R1 36.9로, 우리 vanilla보다 6.4점 높아요. R1 계열 리그는 모두 5.5~6.9점 차이이고, 먼 리그는 비슷해요(하락률 53.5% vs 55.0%). 표의 열 정의(OOD 평균 = R1 제외 13개 평균, 최저, 하락률, 14개 평균, R1과 OOD 평균의 조화평균)를 표 값으로 재현해서, 같은 형식의 우리 행을 드렸어요. BEVDepth 행을 바꿀지는 사용자가 직접 다시 검증한 뒤 정해요.
+- **BEVDepth 좌표계·평가 검증 (사용자 질문 "우리 config랑 좌표계 잘 실험했지?"):** `tools/check_bevdepth_pccr.py`를 만들었어요(커밋 `627ed75`).
+  - `eval-gt`: 학습 GT를 예측으로 넣으면 R1·R6에서 mAP 0.998, ATE 0.002 m, ASE 0, AOE 0.0004예요.
+    - bus 0.989는 devkit의 recall 1.0 반올림 문제예요(모든 거리 기준에서 1 − 1/90).
+    - ATE는 PCCR 어댑터가 바닥 중심(`box[:3]`)을 쓰는 데서 와요. ego가 기운 샘플(test의 1.3%가 5° 초과, 최대 11°)에서 최대 0.41 m예요. vanilla R1 예측을 중력 중심으로 다시 평가해도 mAP 차이는 +0.02예요.
+    - 처음에는 점수를 모두 1로 줘서 devkit이 오차를 박스 하나 값으로 보고했어요(ATE 0.156). 점수를 서로 다르게 줘서 고쳤어요.
+  - `render`: 이미지 증강과 BDA가 걸린 학습 샘플에서 박스와 LiDAR depth 라벨이 이미지와 맞아요.
+- **UDGA 결정 (사용자):** LiDAR depth 없음, pc400 + bin [1, 90], ext aug 포함(BDA, 확률 0.5), 공간 쌍만, L_ov는 대응 칸만, L_p는 일단 공개 코드대로예요([decisions.md](decisions.md)). 논문(arXiv 2410.22461)은 표 4와 부록 B를 직접 읽었어요.
+- **UDGA 재구현:** 커밋 `c1982eb`~`31ecc5f`예요. 새 파일 3개와 설정이에요. 기존 파일은 고치지 않았어요.
+  - 재현 체크(`tools/bugrepro/udga_checks.py`)는 공식 함수를 소스 그대로 꺼내 돌려요. 공식은 9개 모두 FAIL이에요. 재구현은 7개 PASS이고, 2개는 결정대로 n/a예요(UDGA-2 LiDAR 타깃 없음, UDGA-4 공개 코드 유지).
+  - R1(8대)에서 쌍은 이웃끼리 16개예요. nus6 합성 링에서는 공식 12쌍과 같아요.
+  - GPU 스모크와 2-GPU 1 epoch mini 학습(평가 포함)이 통과했어요.
+- **장부:** UDGA 부분을 PD-BEV와 같은 형식(위치·문제·발견·재확인·재구현·커밋·체크 전/후)으로 채웠어요. PD-BEV 체크 표에서 칸이 밀린 PDBEV-9 행도 고쳤어요.
+
 ## 다음 할 일
 
-1. 학습이 끝나면 14개 리그를 평가해요.
-   - BEVFormer-S(GPU 2·3, 내일 아침 7시쯤 끝남): `bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3`
-   - PD-BEV-A(GPU 0·1, 내일 새벽 3시쯤 끝남): `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/pdbev-r50-pccr-A/R1 0,1`
-2. PD-BEV-B를 학습해요. A가 끝나면 GPU 0·1에서 돌려요.
-3. UDGA를 재구현해요(3장). 대상은 장부의 UDGA-1~9예요.
-4. BEVFormer-S + PD-BEV를 만들어요(5장). BEVFormer-S 결과가 나온 뒤에 해요.
+1. UDGA R1 학습(GPU 2·3)이 끝나면 14개 리그를 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/udga-r50-pccr/R1 2,3`
+2. PD-BEV-B 학습(GPU 0·1, 12:30쯤 끝남)이 끝나면 평가해요: `bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/pdbev-r50-pccr-B/R1 0,1`
+3. BEVFormer-S 14개 리그 평가 결과를 정리해요.
+4. BEVFormer-S + PD-BEV를 만들어요(5장).
+5. 사용자가 표의 BEVDepth 행을 다시 검증한 뒤, 표에 넣을 행을 정해요.

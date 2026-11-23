@@ -80,7 +80,7 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-5 | 같은 샘플의 2D heatmap peak 수를 기준 계산과 비교해요. 기준은 7클래스, BEV 범위 안, z > 1 m, 증강 후 맵 안이에요. | FAIL: peak 29개, 기대 8개 | PASS: peak 8개, 기대 8개 (같은 커밋에서 PDBEV-4 체크도 PASS: child 채널 peak 0개) | `a0923e8` |
 | PDBEV-6/7 | R1 mini 샘플 0에 합성 car 하나를 넣어요(앞 범퍼 카메라 9.6 m 앞, 높이 3 m). 이 물체는 원본 이미지 위쪽(약 127행)에 투영돼요. resize 0.8과 아래 정렬 crop 192행을 주면 중심이 feature map보다 11행 위로 나가요. 그 상태에서 실제 뷰(3×3 창)와 가상 뷰(2×3 창)의 mask를 기준 창과 비교해요. 처음 버전은 이런 물체가 없는 샘플을 써서 PDBEV-5만 고쳐도 통과했기 때문에 합성 물체를 넣는 방식으로 바꿨어요. | FAIL: 창 밖 mask 셀 실제 뷰 18개, 가상 뷰 12개 (처음 버전 체크는 PDBEV-4·5 이전 기준 125개) | PASS: 실제 뷰·가상 뷰 모두 창 밖 0개, 빠진 셀 0개 | `94c310a` |
 | PDBEV-8 | z 8 m, height_num 3으로 view transformer를 만들고 z-bin이 덮는 범위를 재요. | FAIL: 3칸 × 2 m = 6 m (8 m 중) | PASS: 3칸 × 2.667 m = 8.0 m | `df55d35` |
-| PDBEV-9 | crop_w > 0인 상태로 flip한 샘플에서, 실제 intrinsic의 주점을 증강 행렬로 옮긴 원래 주점과 비교해요. 좌우 반전 자체는 post_rot이 담당해서 pinhole K로는 표현할 수 없어요. 그래서 주점 위치와 \ | fx'\ | , \ | fy'\ | 만 비교해요. | flip이면 실제 intrinsic의 주점을 `cx' = W_crop − cx'`로 옮겨요(`loading_UDA.py:595` 다음). 좌우 반전 자체는 공식대로 post_rot이 담당해요. 회전(±5.4°)도 공식대로 넣지 않아요. | `079342b` |
+| PDBEV-9 | crop_w > 0인 상태로 flip한 샘플에서, 실제 intrinsic의 주점을 증강 행렬로 옮긴 원래 주점과 비교해요. 좌우 반전 자체는 post_rot이 담당해서 pinhole K로는 표현할 수 없어요. 그래서 주점 위치와 초점거리 크기(fx', fy'의 절댓값)만 비교해요. | FAIL: 주점 16 px 차이, 초점거리 차이 0 | PASS: 주점 0.0 px, 초점거리 0.000 px | `079342b` |
 | PDBEV-10 | 앞 카메라에 pitch_aug, roll_aug를 각각 0.1 rad 주고, 카메라 좌표계에서의 회전축을 확인해요. | FAIL: pitch_aug는 카메라 z(광축), roll_aug는 카메라 x로 돌려요(반대여야 해요). | PASS: pitch_aug는 카메라 x축, roll_aug는 카메라 z축으로 돌려요. | `0cd15bc` |
 | PDBEV-12 | BEV_Aux 출력과 `sigmoid(F_height) · F_bev`를 비교해요. | FAIL: 최대 차이 0.261 (sigmoid 없음) | PASS: 최대 차이 0 (부동소수점 수준) | `430d762` |
 | PDBEV-16 | PCCR 설정(crop_h (0, 0))으로 테스트 crop의 위쪽 행을 확인해요. 학습 crop은 아래 정렬이라 12여야 해요. | FAIL: 6 (가운데 정렬) | PASS: 위쪽 행 12 (학습과 같은 아래 정렬) | `aebc6ef` |
@@ -88,20 +88,71 @@ cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python ../tools/bugrepro/pdb
 | PDBEV-11 | GPU 스모크(`tools/bugrepro/pdbev_smoke.py`): PD-BEV-A 설정으로 R1 mini 2샘플 학습 1 step 동안 `BEV_aux` forward 횟수를 세요. | (공식 코드: 3번, 코드 읽기) | PASS: 1번. 같은 step에서 모든 손실이 유한하고, 학습 파라미터 462/462개에 그래디언트가 있어요. | `ec1615b` |
 | PDBEV-15 | 같은 스크립트에서 test 파이프라인 샘플 하나로 `simple_test`를 돌려요. | (공식 코드: TypeError, 코드 읽기) | PASS: 박스 379개 | `dffad88` |
 
-## UDGA: 재구현할 때 의도대로 만들 부분
+## UDGA: 재구현에서 고친 것 (DG 학습 경로)
 
-UDGA는 코드 기반이 달라서 재구현해요([porting_plan.md](porting_plan.md) 3장). 위치는 `third_party/UDGA/` 기준이에요.
+UDGA는 BEVDet master(mmdet3d 0.17) 위의 오버레이라서 그대로 옮길 수 없어요. 그래서 vanilla BEVDepth 경로 위에 **새 파일로 재구현**했어요([porting_plan.md](porting_plan.md) 3장). 기존 파일은 고치지 않았어요.
+- `bevdepth/mmdet3d/models/necks/view_transformer_udga.py`: virtual depth로 lift하는 view transformer예요.
+- `bevdepth/mmdet3d/models/detectors/bevdepth_udga.py`: 대응 칸 계산, L_ov, 공개 코드 그대로의 L_p, detector예요.
+- `bevdepth/mmdet3d/datasets/pipelines/loading_udga.py`: ext aug예요.
+- 설정은 `bevdepth/configs/gen2e/udga-r50-pccr.py`예요.
 
-| ID | 위치 | 문제 | 발견 | 재구현에서 |
+구성(L_d 없음, pc400 + bin [1, 90], ext aug, 공간 쌍, 대응 칸만 비교, L_p는 공개 코드)은 2026-11-23 사용자 결정이에요([decisions.md](decisions.md)). 위치는 `third_party/UDGA/`(@9198218) 기준이에요.
+
+| ID | 위치 | 문제 | 발견 | 재확인 (2026-11-23) | 영향 | 재구현에서 | 커밋 |
+|---|---|---|---|---|---|---|---|
+| UDGA-1 | `models/detectors/bevssl.py:62-68` vs `:74` | 재투영 점은 `meshgrid(w, h, d)`로 (D, w, h) 순서로 만들고, logit은 `view(B, N, D·W·H)`로 (D, h, w) 순서로 펼쳐요. 그래서 점마다 다른 픽셀의 logit이 붙어요. `photo_reprojection`(`:176-181`)도 같아요. | U02 (순수 Python 재현) → V06 confirmed (검증자도 재현) | 코드에서 확인, 체크로 재현 | L_ov가 대응점끼리가 아니라 뒤섞인 픽셀끼리 logit을 맞춰요. | `frustum_correspondences`가 view transformer의 frustum 점 `(N, D, fH, fW)`을 logit과 같은 메모리 순서로 써요. 점의 번호가 곧 그 logit의 칸 번호예요. | `4dec257` |
+| UDGA-2 | 타깃 `models/detectors/bevssl_unsupdepth.py:75` vs lift `models/necks/view_transformer.py:488-489` | LiDAR depth 타깃은 d/k, lift는 bin/k예요. 타깃 bin이 d/k²로 lift돼요. DG-BEV 식 3(타깃 = d·k)과도, PD-BEV 구현과도 반대 방향이에요. | U03 → V08 confirmed | 코드에서 확인, 체크로 재현 | R1(k 1.02)은 40 m 점이 38.2~41.8 m로 lift돼요. R1-f(k 1.61)는 15.5 m예요. | **해당 없음:** LiDAR depth 타깃을 쓰지 않아요(2026-11-23 결정). lift는 virtual / k이고(DG-BEV 식 3), L_ov도 같은 `get_lidar_coor`를 써요. L_d를 다시 켤 때는 타깃을 d·k로 만들어야 해요. | `a70d4e4` |
+| UDGA-3 | `models/detectors/bevssl.py:64, 66-67, 126` | 재투영 점의 depth로 bin 번호(`linspace(1, D, D)`)를 미터 그대로 쓰고 pixel_const를 무시해요. 픽셀도 `u = 16·w`라서 frustum(`linspace(0, W−1, fW)`)과 달라요. | U04 | 코드에서 확인, 체크로 재현 | 재투영 점이 같은 칸의 lift 점과 평균 10.2 m 떨어져 있어요(nus6 합성 링). | 대응 칸 계산이 lift와 같은 `get_lidar_coor`(frustum 픽셀, metric = virtual / k)로 점을 만들어요. 카메라 j 칸은 가장 가까운 frustum 픽셀과, virtual depth가 속한 bin 구간 [d0 + b·Δ, d0 + (b+1)·Δ)로 정해요. 이 구간은 BEVDepth depth 라벨과 같은 규칙이에요. | `4dec257`, `a70d4e4` |
+| UDGA-4 | `models/detectors/bevssl.py:174, 212-218` | photometric 손실이 argmax와 정수 인덱싱을 거쳐서 그래디언트가 0이에요. 로그에만 찍혀요. | U05 → V07 confirmed | 코드에서 확인, 체크로 재현 | L_p가 학습에 영향을 주지 않아요. | **공개 코드대로 둬요**(2026-11-23 사용자 결정, "일단 공개 코드 대로"). `photo_reprojection_public`은 공개 코드를 그대로 옮겼어요. 바꾼 건 쌍(UDGA-7)과 B·N(UDGA-8)뿐이에요. 그래서 L_p 안에는 UDGA-1의 순서 뒤섞임과 bin 번호 depth도 공개 코드처럼 남아 있어요. 값은 공식과 같고(체크에서 0.9484로 일치), 가중치 2.0으로 로그에 남아요. | `4dec257` |
+| UDGA-5 | `datasets/lyft_yawaug.py:62-83` | ext aug가 박스와 외부 파라미터는 회전하지만 LiDAR 점은 회전하지 않아요(`lidar2new`를 시각화에서만 써요). | U06 → V09 confirmed | 코드에서 확인, 체크로 재현 | 증강된 절반은 depth GT가 틀려요. R1 앞 카메라에서 올바른 라벨 픽셀이 모두 사라져요. | **해당 없음:** ext aug를 BDA 회전으로 구현해요. 박스와 lift된 frustum이 같은 bda 행렬로 함께 돌아요. LiDAR depth는 쓰지 않아요. 공식처럼 학습셋을 두 배로 복제하지 않고, 샘플마다 확률 0.5로 {−90°, 90°, 180°}를 더해요. | `e0bbc7d` |
+| UDGA-6 | `models/detectors/bevssl_unsupdepth.py:135`, `models/detectors/bevssl.py:126` | 겹침이 전혀 없으면 SmoothL1이 빈 텐서의 평균이라 NaN이에요. 같은 칸에 여러 점이 오면 마지막에 쓴 값만 남아요(GPU에서는 순서가 비결정적). | U07 → V11 partly_wrong (쌍 하나가 비는 건 괜찮고, 전체가 비면 NaN) | 코드에서 확인, 체크로 재현 | 겹침이 없는 배치에서 학습이 NaN이 돼요. 같은 칸의 값이 실행마다 달라져요. | 대응이 없으면 0을 반환해요(그래프는 유지). 같은 (쌍, 칸)에 온 값은 `torch.unique` + `index_add_`로 평균해요. 순서와 무관하고, 부동소수점 반올림만 달라질 수 있어요. | `4dec257` |
+| UDGA-7 | `models/detectors/bevssl.py:33-45` | 카메라 쌍이 nuScenes 6대 링으로 하드코딩돼 있어요. 6대가 아니면 Waymo 5대 표를 써요. | V05 | 코드에서 확인, 체크로 재현 | R1(8대)에서는 쌍 8개 중 6개가 겹침이 없는 카메라끼리예요. 실제로 겹치는 쌍은 16개예요. | 샘플마다 캘리브레이션과 증강 행렬로 대응 칸을 계산하고, 대응이 하나라도 있는 모든 방향 쌍을 써요. nus6 합성 링에서는 공식 쌍 12개와 정확히 같아요. R1은 이웃끼리 16쌍, R1-c10은 30쌍이에요. 임계값은 두지 않아요. | `4dec257` |
+| UDGA-8 | `models/detectors/bevssl.py:55` vs `models/detectors/bevssl_unsupdepth.py:112` | 재투영은 B = BN // len(쌍 표), 손실은 B = BN // Ncams로 배치 크기를 따로 계산해요. | W03 | 코드에서 확인, 체크로 재현 | 카메라 10대(R1-c10)면 재투영이 2샘플 × 5대로 잘못 읽고, 손실에서 IndexError가 나요. | B와 N을 텐서 모양에서 한 번만 읽어요. | `4dec257` |
+| UDGA-9 | `models/detectors/bevssl_unsupdepth.py:127-135` | 겹친 픽셀의 mask를 D축 전체로 펼쳐서, 값이 옮겨지지 않은 bin도 0과 비교해요. | W01 | 코드에서 확인, 체크로 재현 | nus6에서 비교 원소의 35%가 빈 bin이에요. 그 bin의 logit을 0으로 끌어당겨요. | **대응 칸만 비교해요**(2026-11-23 결정). 논문 식 3의 "대응 depth" 사이 거리예요. logit, SmoothL1(β = 1), 가중치 1, target을 detach하지 않는 것은 공식 config 그대로예요. | `4dec257` |
+
+## UDGA 재현 체크 (`tools/bugrepro/udga_checks.py`)
+
+체크 스크립트 커밋은 `c1982eb`이에요. UDGA는 고쳐 쓴 게 아니라 다시 만든 거라서, 체크마다 두 번 돌려요.
+- **공식 코드:** `third_party/UDGA`에서 해당 함수를 ast로 그대로 꺼내 실행해요. `self`에는 그 함수가 읽는 속성만 넣어요.
+- **재구현:** Gen2E 모듈을 실행해요.
+
+리그는 세 가지예요.
+- **nus6:** 공식 코드가 하드코딩한 순서(FL, F, FR, BL, B, BR)의 nuScenes식 합성 6대 링이에요(HFOV 70°, 뒤 110°).
+- **R1, R1-c10:** 실제 PCCR test 첫 샘플이고, vanilla 테스트 resize/crop을 적용해요.
+
+전부 CPU로 돌려요.
+
+```bash
+cd bevdepth && ~/miniconda3/envs/gen2e-bevdepth/bin/python -I ../tools/bugrepro/udga_checks.py
+```
+
+| ID | 체크 내용 | 공식 코드 (2026-11-23) | 재구현 | 커밋 |
 |---|---|---|---|---|
-| UDGA-1 | `bevssl.py:62-74` | 재투영 점은 (D, w, h) 순서로 만들고 logit은 (D, h, w)로 펼쳐요. 그래서 점마다 다른 픽셀의 logit이 붙어요(실제 크기에서 점의 99.8%). | U02 (순수 Python 재현) → V06 confirmed (검증자도 직접 재현) | view transformer의 frustum `(D, fH, fW)` 점을 그대로 써서 순서를 맞춰요. |
-| UDGA-2 | 타깃 `bevssl_unsupdepth.py:75` 등 vs lift `view_transformer.py:488-489` | depth 타깃은 d/k, lift는 bin/k예요. k ≈ 1일 때만 서로 맞아요. | U03 → V08 confirmed | 타깃과 lift에 같은 변환을 써요. |
-| UDGA-3 | `bevssl.py:64, 126` | 재투영할 때 bin 번호를 미터 depth로 쓰고 pixel_const를 무시해요. | U04 | bin 중심의 실제 depth를 써요. |
-| UDGA-4 | `bevssl.py:174, 212-218` | photometric 손실이 argmax와 정수 인덱싱을 거쳐서 그래디언트가 0이에요. 로그에만 찍혀요. | U05 → V07 confirmed | 논문 식 4처럼 그래디언트가 흐르게 구현해요. |
-| UDGA-5 | `lyft_yawaug.py:62-83` | extaug가 박스와 외부 파라미터는 회전하지만 LiDAR 점은 회전하지 않아요. 증강된 절반은 depth GT가 틀려요. | U06 → V09 confirmed | 점도 같은 회전으로 옮겨요. |
-| UDGA-6 | `bevssl_unsupdepth.py:135`, `bevssl.py:126` | mask가 비면 SmoothL1이 NaN이고, scatter 중복 쓰기는 GPU에서 비결정적이에요. | U07 → V11 partly_wrong (쌍 하나가 비는 건 괜찮고, 전체가 비면 NaN) | 빈 mask를 막고, 결정적으로 모아요. |
-| UDGA-7 | `bevssl.py:33-45` | 카메라 쌍이 nuScenes 6대 링으로 하드코딩돼 있어요. | V05 | 캘리브레이션에서 겹침 비율로 쌍을 계산해요. 6대 링이면 원래 쌍 12개가 그대로 나와요. |
-| UDGA-8 | `bevssl.py:55` vs `bevssl_unsupdepth.py:112` | 배치 크기를 두 곳에서 다르게 계산해요. 카메라 10대면 크래시가 나요. | W03 | 재구현에서는 한 곳에서만 계산해요. |
-| UDGA-9 | `bevssl_unsupdepth.py:127-135` | 겹침 손실이 D축으로 sparse하고, 픽셀 mask를 89 bin 전체로 펼쳐요. | W01 | 구현할 때 정의를 정해서 기록해요. |
+| UDGA-1 | 칸마다 자기 번호를 값으로 넣은 logit을 옮겨요. 옮겨진 값이 가리키는 칸의 점이, 실제로 그 픽셀에 투영되는지 봐요. 공식은 공식 코드의 기하로 확인해요. 재구현은 lift 점을 독립된 float64 투영으로 확인해요. | FAIL: 옮겨진 logit 164,367개 중 163,770개(99.6%)가 자기 칸이 투영되지 않는 픽셀에 있어요. | PASS: nus6 210,831개, R1 403,029개 모두 0개 | `4dec257` |
+| UDGA-2 | 40 m 점의 LiDAR 타깃 bin을 lift했을 때의 거리예요. | FAIL: R1(k 1.024)에서 38.2~41.8 m, R1-f(k 1.61)에서 15.5 m | n/a: LiDAR 타깃 없음(결정). lift와 L_ov가 `get_lidar_coor`를 같이 써요. | `a70d4e4` |
+| UDGA-3 | 같은 칸에 대해 재투영 점과 lift 점이 같은 3D 점인지 봐요. 재구현은 모든 대응이 대상 칸의 픽셀과 depth bin 안에 드는지 봐요. | FAIL: 공식 재투영 점과 공식 lift 점의 거리 평균 10.19 m, 최대 95.9 m | PASS: nus6 210,831, R1 403,029, R1-c10 899,830개 대응 모두 픽셀·bin 밖 0개 | `4dec257` |
+| UDGA-4 | 무작위 logit(requires_grad)으로 L_p를 계산해요. | FAIL: loss_rgb 0.9484, requires_grad=False | n/a(결정대로 유지): loss_rgb 0.9484로 공식과 같고, requires_grad=False | `4dec257` |
+| UDGA-5 | R1 학습 샘플에 공식 `yaw_aug`를 적용해요. 앞 카메라 depth 라벨을 공식 방식(점은 그대로, 외부 파라미터만 회전)과 올바른 방식으로 비교해요. 재구현은 ext aug 90°를 강제하고, 역 BDA로 되돌린 박스를 증강하지 않은 박스와 비교해요. | FAIL: +90° 복제본에서 올바른 라벨 픽셀이 100% 사라져요. 점을 같은 회전으로 옮기면 정확히 복원돼요. | PASS: 박스 차이 3.8e-06 m. depth 라벨을 쓰지 않아요. | `e0bbc7d` |
+| UDGA-6 | 겹침이 전혀 없는 입력으로 손실을 계산해요. 같은 칸에 여러 점이 오는 경우를 세요. | FAIL: 공식 SmoothL1 = NaN. 산포는 칸마다 값 하나만 남겨요(마지막에 쓴 값). | PASS: 빈 입력에서 0. 칸 31,941개에 점이 여러 개 와서 평균해요. | `4dec257` |
+| UDGA-7 | 쌍을 독립 계산한 실제 겹침 쌍(어떤 frustum 점이라도 상대 카메라에 들어가는 쌍)과 비교해요. | FAIL: R1(8대)에서 공식 표의 쌍 8개 중 6개가 겹침 없음. 실제 겹침 쌍은 16개예요. | PASS: nus6 12쌍 = 공식 12쌍. R1 16쌍 = 실제 겹침 쌍(이웃끼리). | `4dec257` |
+| UDGA-8 | R1-c10(10대)으로 forward_train 순서대로 재투영 → 손실을 돌려요. | FAIL: 재투영이 2샘플 × 5대로 읽고, 손실에서 `IndexError` | PASS: 30쌍, 대응 899,830개, L_ov 유한 | `4dec257` |
+| UDGA-9 | 공식 mask가 비교하는 원소 중 옮겨진 값이 없는 bin의 수를 세요. | FAIL: 251,603개 중 87,236개(35%)가 빈 bin | PASS: 비교하는 칸 175,614개 모두 옮겨진 값이 있어요. | `4dec257` |
+
+**GPU 스모크 (`tools/bugrepro/udga_smoke.py`, 커밋 `31ecc5f`)**
+- R1 mini 4샘플, GPU 1장으로 학습 1 step을 돌렸어요.
+  - 손실은 모두 유한해요. `loss_overlap` 0.286(그래디언트 있음), `loss_rgb` 0.817(그래디언트 없음)이에요.
+  - 학습 파라미터 308/308개에 그래디언트가 있어요.
+  - 샘플마다 쌍 16개이고, 대응은 140만 개예요. 메모리는 7.5 GB예요.
+  - `simple_test`도 돌아요.
+- 2-GPU 1 epoch mini 학습(R1 mini)도 끝까지 돌았어요. 체크포인트, EMA, epoch 끝 평가까지 정상이에요(0.69 s/iter, 8.9 GB).
+
+**논문과 공개 코드가 다른 곳 (UDGA, arXiv 2410.22461, 2026-11-23에 직접 읽음)**
+- **LiDAR depth(L_d):** 논문 표 4 최종 행과 식 7에는 없어요. 공개 config에는 있어요(가중치 100). 결정: 논문대로 빼요.
+- **초점거리 정규화(pixel_const):** 논문 방법에는 없고, 공개 config에는 있어요(pc400). 결정: 공개 config대로 넣어요.
+- **ext aug:** 논문 최종 행과 공개 config 모두 넣었어요. 공개 코드는 학습셋을 두 배로 늘려요. 결정: 넣되, 반복 수는 vanilla와 같게 해요.
+- **인접 뷰:** 논문은 공간·시간 인접 뷰, 공개 코드는 공간 쌍만이에요. 결정: 공간 쌍만 써요.
+- **거리 함수:** 논문 식 3은 "Euclidean distance"이고, 공개 config는 SmoothL1(`ssl_loss='l1_loss'`)이에요. 공개 config대로 해요.
+- **손실 가중치:** 논문은 "grid-search"라고만 쓰고 값이 없어요. 공개 config 값을 써요: L_ov 1.0(`ssl_weight`), L_p 2.0(하드코딩).
+- **epoch:** 논문 24, 공개 config 32예요. vanilla 규칙대로 24를 써요(2026-11-22 결정).
 
 **UDGA에서 해당 없는 것:** LEDA/adapter 관련(U08, U09)은 target 라벨이 있는 적응 단계 전용이라 DG 표에서는 안 써요. CMKD(U10), 인프라(U00, U11~U16), NDS* 정규화(U14, 우리는 PCCR 평가를 써요)도 해당 없어요.
