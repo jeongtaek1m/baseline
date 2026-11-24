@@ -117,9 +117,13 @@
   - **검사:** `tools/check_udga_megvii.py` 7개 모두 PASS예요. 대응 3만 개를 float64로 다시 계산해도 대상 칸이 모두 맞고, R1 순서쌍은 16개예요. Ld 타깃은 lift 기하와 1 bin 이내에서 맞고, L_p 오차는 LiDAR depth에서 가장 작아요. GPU 스모크도 PASS예요(Lp 15.1 GB, Ld 12.9 GB).
   - **GPU:** 0·1은 다른 사용자(shchoi)의 작업이 쓰고 있어요. 그래서 Ld를 GPU 2·3에서 먼저 돌리고(13:22 시작) Lp를 이어서 돌려요. 처음 두 smoke를 동시에 돌렸을 때는 CUDA OOM이 났어요. 각각 따로 돌리면 통과했어요.
   - **사고:** 채점 체인 스크립트에 Ld 실행 프로세스 번호를 잘못 넘겨서, 체인이 Ld가 끝난 줄 알고 Lp를 GPU 2·3에서 시작했어요. Lp는 DDP 초기화 중에 멈췄고, 남은 프로세스는 지웠어요. Ld 학습은 영향을 받지 않았어요. 체인은 프로세스 확인을 넣어서 다시 시작했어요.
+- **UDGA-Lp·Ld 결과 (Megvii base):** Lp는 R1 35.0, OOD 평균 22.2, H 27.2예요. Ld는 R1 32.7, OOD 평균 20.2, H 25.0이에요. 자세한 내용은 [results.md](results.md)에 있어요.
+  - **실행:** 13:37에 GPU 0·1이 비어서 체인이 Lp를 거기서 시작했어요. 그래서 두 학습이 동시에 돌았어요(Ld 13:22~14:57 GPU 2·3, Lp 13:37~15:35 GPU 0·1). 14개 리그 채점은 체인이 자동으로 돌렸어요(각 약 15분, 리그마다 1800개 샘플, FP32).
+  - Lp가 14개 리그 모두에서 Ld보다 높아요. 같은 base PD-BEV와 비교하면 Lp는 R1이 가장 높고(35.0 vs 33.6·34.0) OOD 평균은 1.2점 낮아요(22.2 vs 23.4).
+  - **예전 base와 비교:** 예전 base에서는 Lp의 OOD 평균(25.2)이 PD-BEV(18.8·20.3)보다 높았는데, 새 base에서는 순서가 바뀌었어요. 모든 방법에서 초점거리가 R1과 다른 8개 리그가 같은 6개 리그보다 2.5~4.8점 덜 올라요. camera-aware BatchNorm 붕괴(fx·fy 분산 7.2e-10)는 두 base의 체크포인트 8개에서 값이 같아서 이 차이를 설명하지 못해요. 원인은 아직 몰라요.
+  - **depth 분포 (R1 test 8개 샘플):** Lp는 거의 평평해요(softmax 최대 확률 평균 0.026, 균일 0.011, LiDAR와 순위 상관 −0.67). Ld는 depth를 제대로 배워요(0.65, +0.93). 예전 base와 같은 모양이에요.
 
 ## 다음 할 일
 
-1. UDGA-Ld(약 15:00)와 UDGA-Lp(그 뒤 약 1.7시간)가 끝나면 채점 결과를 [results.md](results.md)에 넣어요. 채점은 체인이 자동으로 돌려요(`logs/udga_megvii/chain.log`).
-2. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth·PD-BEV·UDGA 행.
-3. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
+1. 사용자 확인이 필요한 것: 표에 넣을 BEVDepth·PD-BEV·UDGA 행(새 base UDGA는 Lp와 Ld 중 어느 것인지 포함), 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), 예전 base 행을 EMA로 다시 평가할지.
+2. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
