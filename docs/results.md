@@ -14,6 +14,7 @@
 | **BEVDepth (Megvii 공식 코드, 공저자 base, 우리)** | 32.1 | 29.3 | 35.4 | 0.6 | 33.3 | 25.9 | 0.6 | 10.4 | 31.0 | 0.0 | 7.1 | 12.4 | 6.5 | 3.2 |
 | **BEVDepth + PD-BEV-A (Megvii base, 우리)** | 33.6 | 31.3 | 35.8 | 19.9 | 34.2 | 33.0 | 23.3 | 25.4 | 34.7 | 6.0 | 14.4 | 22.0 | 15.2 | 8.9 |
 | BEVDepth + PD-BEV-B (Megvii base, 우리, 섭동 범위를 PCCR 리그에 맞춤) | 34.0 | 31.3 | 36.3 | 19.3 | 34.6 | 34.8 | 23.1 | 25.4 | 34.6 | 5.6 | 13.4 | 21.7 | 15.2 | 8.7 |
+| BEVDepth + UDGA-Ld / -Lp (Megvii base, 우리) | 학습 중 | | | | | | | | | | | | | |
 | (참고) BEVDet† | 25.2 | 23.2 | 27.1 | 0.5 | 24.7 | 21.7 | 1.3 | 9.0 | 25.5 | 0.0 | 8.2 | 11.2 | 4.9 | 5.1 |
 | (참고) BEVFusion-C† | 26.0 | 24.0 | 27.1 | 0.9 | 24.0 | 21.7 | 2.2 | 14.6 | 25.7 | 0.0 | 10.6 | 12.8 | 3.6 | 6.5 |
 | (참고) Fast-BEV† | 12.9 | 12.5 | 19.2 | 6.0 | 17.6 | 18.3 | 7.0 | 9.0 | 6.1 | 1.2 | 0.0 | 9.0 | 1.8 | 0.0 |
@@ -218,3 +219,20 @@
   - 예전 base와 달리 R1도 올라요(vanilla 대비 A +1.5, B +1.9). 예전 base에서는 PD-BEV가 R1을 2.6점 깎았어요.
   - 새 base에서는 A와 B의 OOD 평균이 같아요(23.385 vs 23.380). B는 R1-t가 1.8점 높고 R6가 0.9점 낮아요. 예전 base에서는 B가 OOD 1.5점 높았어요.
   - 학습은 1회씩이라, A·B 차이(1점 안팎)는 흔들림 범위 안일 수 있어요.
+
+## BEVDepth + UDGA-Ld / -Lp (Megvii base) — 학습 중
+
+- **코드:** `megvii_bevdepth/bevdepth/exps/pccr/udga_lss_r50_pccr_24e_{Ld,Lp}.py` (구성은 [decisions.md](decisions.md) 2026-11-24, 버그 수정 대응은 [bug_ledger.md](bug_ledger.md) "UDGA: Megvii base 이식")
+- **설정:**
+  - UDGA-Ld = 공개 config 구성이에요: LiDAR depth(Megvii base 손실 ×3, 타깃 d·k) + L_ov + 공개 코드 L_p + pc400 + ext aug.
+  - UDGA-Lp = 논문 최종 행이에요: L_ov + 논문 식 4의 L_p, LiDAR depth 없음, pc400 + ext aug.
+  - 둘 다 24 epoch, FP32, GPU 2장 × 4예요.
+- **학습:** GPU 0·1은 다른 사용자 작업이 쓰고 있어서 Ld를 GPU 2·3에서 먼저 돌려요(2026-11-24 13:22 시작, 0.52 s/iter, 약 1.6시간). Lp는 이어서 돌리고, 각 학습이 끝나면 14개 리그 채점이 자동으로 이어져요.
+
+  ```bash
+  bash tools/udga_megvii_train.sh Ld 2,3
+  bash tools/udga_megvii_train.sh Lp 2,3
+  ```
+
+- **채점:** `bash tools/megvii_pccr_test_rigs.sh udga_lss_r50_pccr_24e_Ld <GPU>` (Lp도 같아요)
+- **검사:** `tools/check_udga_megvii.py`(CPU) 7개 모두 PASS, `tools/udga_megvii_smoke.py`(GPU) PASS예요.

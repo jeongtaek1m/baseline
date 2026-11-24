@@ -110,7 +110,16 @@
   - **공식 Megvii 코드에서 본 것:** CenterHead heatmap bias(−2.19)가 적용되지 않아서 첫 step 검출 손실이 약 2.5e3이에요(vanilla, PD-BEV 같음). 공식 그대로 둬요.
 - **GitHub:** `jeongtaek1m/baseline`은 아직 공개 상태예요(2026-11-23 20:55 확인). UDGA 코드(Samsung 소유)가 들어 있어요. 로컬 main은 그 뒤로 커밋이 더 있고, 푸시하지 않았어요.
 
+## 2026-11-24
+
+- **UDGA를 Megvii base로 옮김 (사용자 결정):** 설정은 UDGA-Ld(공개 config 구성)와 UDGA-Lp(논문 최종 행)예요. Ld의 LiDAR depth 손실은 Megvii base 손실 ×3이고, 24 epoch이에요([decisions.md](decisions.md) 2026-11-24). 사용자가 "공개 코드 대로 돌릴까?"라고 물어서, 공개 코드를 그대로 쓰면 PCCR에서 제대로 안 돌아가는 이유(UDGA-7 카메라 쌍 고정, UDGA-2 타깃 k²)를 설명하고 버그 수정본으로 정했어요.
+  - 새 파일 6개예요(커밋 `0e6f969`, `edb7667`, `e8f9a59`). 예전 base 재구현을 Megvii 행렬에 맞게 옮겼어요.
+  - **검사:** `tools/check_udga_megvii.py` 7개 모두 PASS예요. 대응 3만 개를 float64로 다시 계산해도 대상 칸이 모두 맞고, R1 순서쌍은 16개예요. Ld 타깃은 lift 기하와 1 bin 이내에서 맞고, L_p 오차는 LiDAR depth에서 가장 작아요. GPU 스모크도 PASS예요(Lp 15.1 GB, Ld 12.9 GB).
+  - **GPU:** 0·1은 다른 사용자(shchoi)의 작업이 쓰고 있어요. 그래서 Ld를 GPU 2·3에서 먼저 돌리고(13:22 시작) Lp를 이어서 돌려요. 처음 두 smoke를 동시에 돌렸을 때는 CUDA OOM이 났어요. 각각 따로 돌리면 통과했어요.
+  - **사고:** 채점 체인 스크립트에 Ld 실행 프로세스 번호를 잘못 넘겨서, 체인이 Ld가 끝난 줄 알고 Lp를 GPU 2·3에서 시작했어요. Lp는 DDP 초기화 중에 멈췄고, 남은 프로세스는 지웠어요. Ld 학습은 영향을 받지 않았어요. 체인은 프로세스 확인을 넣어서 다시 시작했어요.
+
 ## 다음 할 일
 
-1. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), UDGA를 새 base로 옮길지, 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth·PD-BEV 행.
-2. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).
+1. UDGA-Ld(약 15:00)와 UDGA-Lp(그 뒤 약 1.7시간)가 끝나면 채점 결과를 [results.md](results.md)에 넣어요. 채점은 체인이 자동으로 돌려요(`logs/udga_megvii/chain.log`).
+2. 사용자 확인이 필요한 것: 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), 예전 base 행을 EMA로 다시 평가할지, 표에 넣을 BEVDepth·PD-BEV·UDGA 행.
+3. BEVFormer-S + PD-BEV를 만들어요([porting_plan.md](porting_plan.md) 5장).

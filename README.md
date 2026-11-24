@@ -11,7 +11,7 @@ Gen2E 논문 메인 표의 빈 baseline 행을 채우기 위한 코드 저장소
 |---|---|---|---|
 | BEVDepth (vanilla) | Forward | `bevdepth/` (PD-BEV 트리에 원본 BEVDet 클래스 복원); `megvii_bevdepth/` (Megvii 공식 + 공저자 PCCR 파일) | **완료**: 예전 base R1 30.4 (2026-11-22); Megvii 공식 코드 R1 32.1, OOD 평균 15.1 (2026-11-23) ([results.md](docs/results.md)) |
 | BEVDepth + PD-BEV | Forward | 위 두 base 각각 (공식 코드 버그는 논문 의도대로 수정, [bug_ledger.md](docs/bug_ledger.md)) | 예전 base **완료**: A R1 27.8 / OOD 18.8, B R1 27.8 / OOD 20.3. Megvii base **완료** (2026-11-23): A R1 33.6 / OOD 23.4, B R1 34.0 / OOD 23.4 |
-| BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 vanilla BEVDepth 위에 재구현, 공식 코드 버그는 논문 의도대로 수정) | 예전 base 세 설정 **완료** (처음 R1 33.0 / OOD 23.4, Lp 34.1 / 25.2, Ld 32.1 / 21.3). Megvii base로 옮길지는 결정 전 |
+| BEVDepth + UDGA | Forward | `bevdepth/` (UDGA를 vanilla BEVDepth 위에 재구현, 공식 코드 버그는 논문 의도대로 수정) | 예전 base 세 설정 **완료** (처음 R1 33.0 / OOD 23.4, Lp 34.1 / 25.2, Ld 32.1 / 21.3). Megvii base Ld·Lp 학습 중 (2026-11-24, GPU 2·3) |
 | BEVFormer-S (기존 행 재현 확인) | Backward | `bevformer/` (small 구조, 단일 프레임, 차량 고정 좌표계) | **완료** (2026-11-23): R1 34.5, OOD 평균 25.1, 독립 검증 통과. 기존 행(R1 21.1)은 재현되지 않아요 |
 | BEVFormer-S + PD-BEV | Backward | `bevformer/` | 준비 중 |
 | + UniDrive, + CoIn3D | — | — | 이번 범위에서 제외 |
