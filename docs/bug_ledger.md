@@ -147,6 +147,36 @@ UDGA는 BEVDet master(mmdet3d 0.17) 위의 오버레이라서 그대로 옮길 �
 | UDGA-8 | `models/detectors/bevssl.py:55` vs `models/detectors/bevssl_unsupdepth.py:112` | 재투영은 B = BN // len(쌍 표), 손실은 B = BN // Ncams로 배치 크기를 따로 계산해요. | W03 | 코드에서 확인, 체크로 재현 | 카메라 10대(R1-c10)면 재투영이 2샘플 × 5대로 잘못 읽고, 손실에서 IndexError가 나요. | B와 N을 텐서 모양에서 한 번만 읽어요. | `4dec257` |
 | UDGA-9 | `models/detectors/bevssl_unsupdepth.py:127-135` | 겹친 픽셀의 mask를 D축 전체로 펼쳐서, 값이 옮겨지지 않은 bin도 0과 비교해요. | W01 | 코드에서 확인, 체크로 재현 | nus6에서 비교 원소의 35%가 빈 bin이에요. 그 bin의 logit을 0으로 끌어당겨요. | **대응 칸만 비교해요**(2026-11-23 결정). 논문 식 3의 "대응 depth" 사이 거리예요. logit, SmoothL1(β = 1), 가중치 1, target을 detach하지 않는 것은 공식 config 그대로예요. | `4dec257` |
 
+## UDGA: Megvii base 이식 (2026-11-24)
+
+예전 base의 UDGA 재구현을 공저자 Megvii base(`megvii_bevdepth/`) 위에 **새 파일로** 옮겼어요([decisions.md](decisions.md) 2026-11-24). 함수는 예전 재구현을 Megvii 행렬(sensor2ego, intrin, ida 4×4)에 맞게 옮긴 거예요. 공식 코드와 공저자 파일은 고치지 않았어요.
+- `megvii_bevdepth/bevdepth/datasets/pccr_udga_dataset.py`: ext aug예요(커밋 `0e6f969`).
+- `megvii_bevdepth/bevdepth/layers/backbones/udga_lss_fpn.py`, `models/udga_bev_depth.py`: pc400 virtual depth LSS, 대응 칸, L_ov, L_p예요(커밋 `edb7667`).
+- `megvii_bevdepth/bevdepth/exps/pccr/base_exp_pccr_udga.py`, `udga_lss_r50_pccr_24e_{Lp,Ld}.py`: exp예요(커밋 `e8f9a59`).
+
+| ID | 새 base에서 | 확인 |
+|---|---|---|
+| UDGA-1 | 옮김: 칸의 3D 점은 lift의 frustum 점이고, logit과 같은 메모리 순서예요. | corr 체크 |
+| UDGA-2 | Ld에서 옮김: LiDAR 타깃은 v = d·k이고, base의 depth 손실로 라벨을 만들어요. Lp는 LiDAR 타깃이 없어요. | ld-target 체크 |
+| UDGA-3 | 옮김: 재투영과 lift가 같은 `get_geometry`(metric depth = virtual / k)를 써요. | corr 체크 |
+| UDGA-4 | Lp는 고침(논문 식 4, 그래디언트 있음), Ld는 공개 코드대로 둬요(그래디언트 0). | lp-grad 체크, GPU 스모크 |
+| UDGA-5 | 해당 없음: ext aug가 BDA 행렬로 들어가고, LiDAR depth 라벨은 카메라 좌표 depth라 영향을 받지 않아요. | ext-aug 체크(박스가 bda_mat을 따라감) |
+| UDGA-6 | 옮김: 같은 칸에 온 값은 평균하고, 대응이 없으면 손실이 0이에요. | — |
+| UDGA-7 | 옮김: 쌍은 캘리브레이션에서 계산해요. R1은 순서쌍 16개예요. | corr 체크 |
+| UDGA-8 | 옮김: B, N은 텐서에서 읽어요. | GPU 스모크 |
+| UDGA-9 | 옮김: L_ov는 대응 칸만 비교해요. | — |
+
+**체크 (`tools/check_udga_megvii.py`, CPU, R1, 커밋 `b7a142e`): 7개 모두 PASS예요.**
+- test-inputs: 테스트 데이터셋이 공저자 `PCCRDetDataset`과 똑같아요(R1, R6, ext aug 없음).
+- ext-aug: 4000번 중 50.0%가 ext 각도를 받고, 박스가 bda_mat을 따라가요(오차 5.6e-06 m).
+- corr: 대응 25만 8천 개 중 3만 개를 float64로 다시 계산했어요. 대상 칸이 틀린 것은 0개예요(반올림 경계 20개는 건너뜀). R1의 순서쌍은 16개예요.
+- ld-target: 라벨이 붙은 4,226칸에서 라벨 bin의 lift depth와 LiDAR depth의 차이가 1 bin 이내예요.
+- lp-identity: 자기 자신으로 warp하면 오차가 1.3e-04 이하예요.
+- lp-depth: 겹치는 픽셀의 photometric 오차가 LiDAR depth(×1.00)에서 가장 작아요(테스트 샘플 0.095, 증강된 학습 샘플 0.241).
+- lp-grad: feature 픽셀의 50.5%가 유한한 그래디언트를 받아요.
+
+**GPU 스모크 (`tools/udga_megvii_smoke.py`, GPU 1장, 배치 4, FP32):** Lp, Ld 모두 손실이 유한하고 학습 파라미터 323/323개에 그래디언트가 있어요. 메모리는 Lp 15.1 GB, Ld 12.9 GB예요.
+
 ## UDGA 재현 체크 (`tools/bugrepro/udga_checks.py`)
 
 체크 스크립트 커밋은 `c1982eb`이에요. UDGA는 고쳐 쓴 게 아니라 다시 만든 거라서, 체크마다 두 번 돌려요.
