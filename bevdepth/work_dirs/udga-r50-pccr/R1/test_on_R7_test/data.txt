@@ -1,0 +1,2 @@
+data_root=/data2/PCCR/R7
+ann_file=/data2/PCCR/R7/R7_infos_test.pkl

@@ -1,0 +1,1 @@
+/home/jeongtae/Gen2E/bevdepth/work_dirs/pdbev-r50-pccr-A/R1/epoch_24.pth

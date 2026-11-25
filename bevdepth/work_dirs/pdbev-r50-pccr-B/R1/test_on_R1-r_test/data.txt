@@ -1,0 +1,2 @@
+data_root=/data2/PCCR/R1-r
+ann_file=/data2/PCCR/R1-r/R1-r_infos_test.pkl
