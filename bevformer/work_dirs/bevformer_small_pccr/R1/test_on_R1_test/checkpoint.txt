@@ -1,0 +1,1 @@
+/home/jeongtae/Gen2E/bevformer/work_dirs/bevformer_small_pccr/R1/epoch_24.pth
