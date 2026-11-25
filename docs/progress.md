@@ -123,6 +123,13 @@
   - **예전 base와 비교:** 예전 base에서는 Lp의 OOD 평균(25.2)이 PD-BEV(18.8·20.3)보다 높았는데, 새 base에서는 순서가 바뀌었어요. 모든 방법에서 초점거리가 R1과 다른 8개 리그가 같은 6개 리그보다 2.5~4.8점 덜 올라요. camera-aware BatchNorm 붕괴(fx·fy 분산 7.2e-10)는 두 base의 체크포인트 8개에서 값이 같아서 이 차이를 설명하지 못해요. 원인은 아직 몰라요.
   - **depth 분포 (R1 test 8개 샘플):** Lp는 거의 평평해요(softmax 최대 확률 평균 0.026, 균일 0.011, LiDAR와 순위 상관 −0.67). Ld는 depth를 제대로 배워요(0.65, +0.93). 예전 base와 같은 모양이에요.
 
+## 2026-11-25
+
+- **Megvii base 리그별 평가 파일을 git에 넣음 (사용자 요청):** 사용자가 붙여 준 다른 에이전트의 메모가 PD-BEV-A/B·UDGA 행을 채우려고 리그별 car AP를 물었어요. 이 서버의 평가 파일에서 바로 뽑아 답했고, 사용자가 json을 올려 달라고 했어요.
+  - 5개 행(vanilla, PD-BEV-A·B, UDGA-Lp·Ld) × 14개 리그의 `eval.json`·`metrics_summary.json`과 실행별 `checkpoint.txt`를 넣었어요. `outputs/`가 gitignore라서 강제로 추가했어요.
+  - 14개 리그 클래스별 AP는 [megvii_per_class_ap.csv](analysis/2026-11-24/megvii_per_class_ap.csv)에 모았어요. `eval.json`의 AP는 devkit `metrics_summary.json`과 모든 리그·클래스에서 같아요.
+  - `results_nusc.json`(70개, 약 5 GB)과 `metrics_details.json`(70개, 약 42 MB)은 크기 때문에 넣지 않았어요. 예전 base 리그별 파일(`bevdepth/work_dirs/`)도 넣지 않았어요.
+
 ## 다음 할 일
 
 1. 사용자 확인이 필요한 것: 표에 넣을 BEVDepth·PD-BEV·UDGA 행(새 base UDGA는 Lp와 Ld 중 어느 것인지 포함), 새 base 구성(제 판단 두 가지, [decisions.md](decisions.md) 2026-11-23), 예전 base 행을 EMA로 다시 평가할지.

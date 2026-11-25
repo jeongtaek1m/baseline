@@ -191,7 +191,8 @@
   - 예전 base vanilla(R1 30.4)보다 R1·R1-c6·R1-c10·R1-r가 1.5~2.5점 높아요. R1-t는 3.2점 낮고, R4는 같아요. 먼 리그는 둘 다 무너져요(R1-f 0.6, R2 0.6, R5 0.0).
   - 공저자 README에는 그쪽 plain 학습(amp)의 R6가 FP32 추론에서 7.43이라고 적혀 있어요. 우리 FP32 학습은 7.15라서 비슷해요.
   - 먼 리그가 무너지는 이유는 예전 base와 같아요. camera-aware MLP의 BatchNorm1d가 R1에서 상수인 intrinsic을 거의 0인 분산으로 나눠서, intrinsic이 다른 리그에서 입력이 수만 배가 돼요. 공저자 문서도 R5에서 BEVDepth 박스가 0이라고 적었어요.
-- **원시 결과:** `.../pccr_test/epoch=23-step=11328/<RIG>/{results_nusc.json, eval.json}` (git 제외)
+- **리그별 평가 파일:** `megvii_bevdepth/outputs/pccr_bevdepth_r50/R1/pccr_test/epoch=23-step=11328/<RIG>/{eval.json, metrics_summary.json}`은 git에 있어요(2026-11-25). 같은 폴더의 `results_nusc.json`(예측, 리그당 약 70 MB)과 `metrics_details.json`(PR 곡선)은 크기 때문에 git에서 빠져 있어요.
+  - Megvii base 5개 행의 14개 리그 클래스별 AP는 [megvii_per_class_ap.csv](analysis/2026-11-24/megvii_per_class_ap.csv)에 모았어요(9개 클래스, mAP7 포함).
 - **쓰지 않은 채점:** 학습 직후 자동으로 돈 제 이식의 `-p` 채점은 예측을 R1 val 길이(1020)로 잘라서 R1에서 멈췄어요. PCCR 채점기가 빠진 샘플을 잡아서 잘못된 수치는 나오지 않았어요.
 
 ## BEVDepth + PD-BEV-A / -B (Megvii base)
@@ -217,6 +218,7 @@
   - PD-BEV-A: R1 33.6, OOD 평균 23.4, 최저 6.0(R5), 하락률 30.5%, H 27.6이에요.
   - PD-BEV-B: R1 34.0, OOD 평균 23.4, 최저 5.6(R5), 하락률 31.2%, H 27.7이에요.
   - R1 클래스별 AP(A / B): car 45.2 / 45.4, truck 36.2 / 36.5, bus 27.7 / 28.8, bicycle 45.5 / 46.5, motorcycle 44.9 / 44.6, adult 29.9 / 29.6, child 6.1 / 6.5예요.
+- **리그별 평가 파일:** `megvii_bevdepth/outputs/pdbev_lss_r50_pccr_24e_{A,B}/pccr_test/epoch=23-step=11328/<RIG>/{eval.json, metrics_summary.json}`은 git에 있어요(2026-11-25). 14개 리그의 클래스별 AP는 [megvii_per_class_ap.csv](analysis/2026-11-24/megvii_per_class_ap.csv)에 있어요.
 - **관찰:**
   - 같은 base의 vanilla(R1 32.1, OOD 15.1)보다 14개 리그 모두 높아요. 화각·차량이 바뀐 리그가 크게 올라요(R1-f 0.6 → 19.9, R2 0.6 → 23.3, R3 10.4 → 25.4).
   - 예전 base와 달리 R1도 올라요(vanilla 대비 A +1.5, B +1.9). 예전 base에서는 PD-BEV가 R1을 2.6점 깎았어요.
@@ -253,6 +255,7 @@
   - UDGA-Lp: R1 35.0, OOD 평균 22.2, 최저 4.7(R9), 하락률 36.5%, H 27.2예요.
   - UDGA-Ld: R1 32.7, OOD 평균 20.2, 최저 2.8(R9), 하락률 38.2%, H 25.0이에요.
   - R1 클래스별 AP(Lp / Ld): car 46.9 / 43.0, truck 43.7 / 37.9, bus 29.0 / 27.7, bicycle 47.6 / 48.7, motorcycle 42.7 / 37.3, adult 30.8 / 27.9, child 4.4 / 6.6이에요.
+- **리그별 평가 파일:** `megvii_bevdepth/outputs/udga_lss_r50_pccr_24e_{Ld,Lp}/pccr_test/epoch=23-step=11328/<RIG>/{eval.json, metrics_summary.json}`은 git에 있어요(2026-11-25). 14개 리그의 클래스별 AP는 [megvii_per_class_ap.csv](analysis/2026-11-24/megvii_per_class_ap.csv)에 있어요.
 - **관찰:**
   - Lp가 14개 리그 모두에서 Ld보다 높아요(R1 +2.3, OOD 평균 +2.0). 예전 base에서도 Lp가 Ld보다 높았어요.
   - 둘 다 같은 base의 vanilla(R1 32.1, OOD 15.1)보다 높아요. Lp는 14개 리그 모두 높고, Ld는 12개가 높아요(R6 7.08 vs 7.15, R9 2.81 vs 3.18만 조금 낮아요). 화각·차량이 바뀐 리그가 크게 올라요(Lp: R1-f 0.6 → 20.8, R2 0.6 → 21.3, R3 10.4 → 22.0).
