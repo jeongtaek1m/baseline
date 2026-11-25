@@ -128,7 +128,10 @@
 - **Megvii base 리그별 평가 파일을 git에 넣음 (사용자 요청):** 사용자가 붙여 준 다른 에이전트의 메모가 PD-BEV-A/B·UDGA 행을 채우려고 리그별 car AP를 물었어요. 이 서버의 평가 파일에서 바로 뽑아 답했고, 사용자가 json을 올려 달라고 했어요.
   - 5개 행(vanilla, PD-BEV-A·B, UDGA-Lp·Ld) × 14개 리그의 `eval.json`·`metrics_summary.json`과 실행별 `checkpoint.txt`를 넣었어요. `outputs/`가 gitignore라서 강제로 추가했어요.
   - 14개 리그 클래스별 AP는 [megvii_per_class_ap.csv](analysis/2026-11-24/megvii_per_class_ap.csv)에 모았어요. `eval.json`의 AP는 devkit `metrics_summary.json`과 모든 리그·클래스에서 같아요.
-  - `results_nusc.json`(70개, 약 5 GB)과 `metrics_details.json`(70개, 약 42 MB)은 크기 때문에 넣지 않았어요. 예전 base 리그별 파일(`bevdepth/work_dirs/`)도 넣지 않았어요.
+  - `results_nusc.json`(70개, 약 5 GB)과 `metrics_details.json`(70개, 약 42 MB)은 크기 때문에 넣지 않았어요.
+- **BEVFormer-S·예전 base 리그별 평가 파일도 넣음 (사용자 결정 "둘 다 올려"):** 예전 base 6개 실행(BEVDepth, PD-BEV-A·B, UDGA 처음 설정·Lp·Ld)과 BEVFormer-S의 14개 리그 `metrics_summary.json`·`checkpoint.txt`를 넣었어요. `data.txt`는 있는 실행(PD-BEV-B, UDGA 셋)만 넣었어요.
+  - `checkpoint.txt`를 보면 7개 실행 모두 `epoch_24.pth`(EMA 아님)로 채점했어요.
+  - 예측(`results_nusc.json`)과 PR 곡선(`metrics_details.json`)은 여기서도 넣지 않았어요.
 
 ## 다음 할 일
 

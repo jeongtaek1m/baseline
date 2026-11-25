@@ -66,7 +66,7 @@
   bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/bevdepth-r50-pccr/R1 0,1
   ```
 
-- **원시 결과:** `bevdepth/work_dirs/bevdepth-r50-pccr/R1/test_on_<RIG>_test/` (git 제외)
+- **리그별 평가 파일:** `bevdepth/work_dirs/bevdepth-r50-pccr/R1/test_on_<RIG>_test/{metrics_summary.json, checkpoint.txt}`은 git에 있어요(2026-11-25). 같은 폴더의 `results_nusc.json`·`metrics_details.json`은 크기 때문에 git에서 빠져 있어요.
 
 **BEVDet†와 비교**
 
@@ -93,7 +93,7 @@
   bash tools/bevdepth_test_rigs.sh bevdepth/work_dirs/pdbev-r50-pccr-A/R1 0,1
   ```
 
-- **원시 결과:** `bevdepth/work_dirs/pdbev-r50-pccr-A/R1/test_on_<RIG>_test/` (git 제외)
+- **리그별 평가 파일:** `bevdepth/work_dirs/pdbev-r50-pccr-A/R1/test_on_<RIG>_test/{metrics_summary.json, checkpoint.txt}`은 git에 있어요(2026-11-25). 같은 폴더의 `results_nusc.json`·`metrics_details.json`은 크기 때문에 git에서 빠져 있어요.
 
 **vanilla와 비교**
 
@@ -119,7 +119,7 @@
   bash tools/bevformer_test_rigs.sh bevformer/work_dirs/bevformer_small_pccr/R1 2,3
   ```
 
-- **원시 결과:** `bevformer/work_dirs/bevformer_small_pccr/R1/test_on_<RIG>_test/` (git 제외)
+- **리그별 평가 파일:** `bevformer/work_dirs/bevformer_small_pccr/R1/test_on_<RIG>_test/{checkpoint.txt, pts_bbox/metrics_summary.json}`은 git에 있어요(2026-11-25). `pts_bbox/`의 `results_nusc.json`·`metrics_details.json`은 크기 때문에 git에서 빠져 있어요.
 
 **독립 검증 (2026-11-23)**
 
@@ -149,6 +149,7 @@
 - **주의:** 섭동 범위를 PCCR test 리그의 카메라 배치에서 계산했어요. 테스트 리그 정보를 쓴 설정이라 표에서 따로 표시해야 해요.
 - **체크포인트:** `latest.pth`(= `epoch_24.pth`). **학습 중 R1 val (epoch 24):** 29.7 mAP
 - **결과:** OOD 평균 20.3으로 PD-BEV-A(18.8)보다 1.5점 높아요. R1은 같아요(27.8). 카메라 위치·방향이 바뀐 리그(R1-r +2.6, R1-t +3.1, R6 +2.2, R7 +3.4)에서 주로 올랐어요.
+- **리그별 평가 파일:** `bevdepth/work_dirs/pdbev-r50-pccr-B/R1/test_on_<RIG>_test/{metrics_summary.json, checkpoint.txt, data.txt}`은 git에 있어요(2026-11-25).
 
 ## BEVDepth + UDGA (처음 설정)
 
@@ -156,6 +157,7 @@
 - **설정:** `bevdepth/configs/gen2e/udga-r50-pccr.py`. LiDAR depth 없음, L_ov(대응 칸만, 가중치 1), L_p는 공개 코드대로(그래디언트 0), pc400 virtual depth bin [1, 90), ext aug예요([decisions.md](decisions.md)).
 - **체크포인트:** `latest.pth`(= `epoch_24.pth`). **학습 중 R1 val (epoch 24):** 35.3 mAP(vanilla 33.5)
 - **결과:** R1 33.0으로 vanilla(30.4)보다 높아요. 화각이 바뀐 리그에서도 무너지지 않아요(R1-f 21.3, R2 23.6, R3 25.9). OOD 평균은 23.4로 PD-BEV-A·B보다 높아요.
+- **리그별 평가 파일:** `bevdepth/work_dirs/udga-r50-pccr/R1/test_on_<RIG>_test/{metrics_summary.json, checkpoint.txt, data.txt}`은 git에 있어요(2026-11-25).
 - **depth 분포가 무너졌어요:** epoch 4에서 depth 분포가 거의 균일했어요(최대 확률 0.022, 균일 0.011, vanilla 0.47). L_ov는 모든 logit이 같으면 0이 되기 때문이에요. 그러니 이 행은 사실상 depth 예측 없이 virtual depth 범위 전체에 feature를 고르게 펼치는 모델이에요. 논문 표 4에서 LiDAR depth 없는 L_ov 행이 L_d 행보다 일반화가 좋았던 것과 같은 방향이에요.
 - **추가 변형 두 개를 학습 중이에요**(2026-11-23 결정): UDGA-Lp(논문 식 4의 미분 가능한 L_p)와 UDGA-Ld(LiDAR depth, virtual depth 타깃). 세 설정을 비교해서 표에 넣을 행을 골라요.
 
@@ -166,6 +168,7 @@
 - **결과**
   - UDGA-Lp는 R1 34.1, OOD 평균 25.2로 세 UDGA 설정 중 가장 높아요.
   - UDGA-Ld는 R1 32.1, OOD 평균 21.3으로 가장 낮아요. 특히 화각·차종이 다른 리그(R2 20.2, R6 9.4, R9 4.2)에서 처음 설정보다 낮아요.
+- **리그별 평가 파일:** `bevdepth/work_dirs/udga-r50-pccr-{Lp,Ld}/R1/test_on_<RIG>_test/{metrics_summary.json, checkpoint.txt, data.txt}`은 git에 있어요(2026-11-25).
 - **depth 상태:** 독립 리뷰에서 epoch 5 EMA 체크포인트로 확인했어요.
   - UDGA-Ld는 depth를 제대로 배워요(최대 확률 0.43, LiDAR와 순위 상관 +0.95).
   - UDGA-Lp는 처음 설정처럼 균일하게 무너져 있어요(최대 확률 0.02, 상관 +0.04).
