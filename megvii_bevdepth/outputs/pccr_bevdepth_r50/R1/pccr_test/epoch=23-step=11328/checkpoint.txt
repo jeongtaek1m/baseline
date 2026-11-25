@@ -1,0 +1,1 @@
+/home/jeongtae/Gen2E/megvii_bevdepth/outputs/pccr_bevdepth_r50/R1/lightning_logs/version_0/checkpoints/epoch=23-step=11328.ckpt
